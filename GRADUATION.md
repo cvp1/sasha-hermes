@@ -38,12 +38,10 @@ are and how you like things.
    --user-base)/bin:$PATH"` in your ~/.zshrc.)*
 3. **Get this repo, then run it:**
    ```sh
-   gh repo clone cvp1/sasha-hermes    # or: git clone https://github.com/cvp1/sasha-hermes.git
+   git clone https://github.com/cvp1/sasha-hermes.git
    cd sasha-hermes
    ./run-mac.sh --name YourName --place "Home"
    ```
-   (Private repo → needs auth: `gh auth login` once, or a GitHub personal
-   access token as the git password. Public clone works with neither.)
    It prints your sign-in once, wires the passport bridge into hermes, starts
    the gateway + the page, and opens at `http://127.0.0.1:7790/`. Ctrl-C stops it.
 
