@@ -1,0 +1,41 @@
+{
+  "name": "Sheridan",
+  "place": "The ranch",
+  "port": 7790,
+  "term_port": 7791,
+  "host": "0.0.0.0",
+
+  "auth_file": "~/.config/sasha/auth",
+  "usage_file": "~/.local/state/sasha/usage.jsonl",
+  "telemetry": true,
+
+  "actions": {
+    "inbox-triage": {
+      "cmd": ["/usr/bin/python3", "/path/to/your/inbox_triage.py"],
+      "chip": "Sort my email",
+      "emoji": "&#128229;",
+      "label": "Your email",
+      "busy": "Sorting your email…"
+    }
+  },
+
+  "search_cmd": ["/usr/bin/python3", "/path/to/your/search.py"],
+  "notes_dir": "~/notes/agent-output",
+  "read_dirs": ["~/notes"],
+  "weather_url": "",
+
+  "coach_chips": [
+    {
+      "id": "anything",
+      "emoji": "&#128172;",
+      "chip": "What can you do?",
+      "text": "Just type a question in the chat below, like <q>what can you help me with?</q> &mdash; I answer in plain English."
+    }
+  ],
+
+  "services": [
+    { "href": "http://example.local:3000/", "icon": "&#128200;", "title": "Grafana", "desc": "Charts" }
+  ],
+
+  "static_dirs": {}
+}
