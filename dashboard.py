@@ -105,13 +105,24 @@ def _api_json(url, timeout=3):
     except: return None
 
 def _check_chat():
-    """GREEN only when the chat transport is reachable AND the agent process
-    is alive — a reachable port whose agent died must say so instead of a
-    false 'All's well'."""
-    port = GW_PORT if CHAT_MODE == "ws" else TERM_PORTS["hermes"]
+    """GREEN only when the chat can actually connect — not just when a port
+    answers. In ws mode that means the gateway serves its page AND embedded
+    chat is enabled (a live gateway with the chat switch off once read
+    'All's well' while the conversation couldn't connect — never again)."""
+    if CHAT_MODE == "ws":
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{GW_PORT}/", timeout=3) as r:
+                body = r.read(65536).decode("utf-8", "replace")
+        except OSError:
+            return ("Chat", "RED", "chat offline")
+        if "__HERMES_DASHBOARD_EMBEDDED_CHAT__=false" in body:
+            return ("Chat", "RED", "chat switch is off on the agent")
+        if "__HERMES_SESSION_TOKEN__" not in body:
+            return ("Chat", "YELLOW", "agent is starting up")
+        return ("Chat", "GREEN", "ready")
     port_ok = False
     try:
-        s = socket.create_connection(("127.0.0.1", port), timeout=2); s.close()
+        s = socket.create_connection(("127.0.0.1", TERM_PORTS["hermes"]), timeout=2); s.close()
         port_ok = True
     except OSError:
         pass

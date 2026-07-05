@@ -49,6 +49,7 @@ echo "==> Installing code to /usr/local/lib/sasha/"
 install -d /usr/local/lib/sasha
 install -m 0644 "$HERE/dashboard.py" /usr/local/lib/sasha/dashboard.py
 install -m 0755 "$HERE/sasha-term"  /usr/local/lib/sasha/sasha-term
+install -m 0755 "$HERE/sasha-gw"    /usr/local/lib/sasha/sasha-gw
 
 echo "==> Config + auth for $USER_NAME"
 CFG_DIR="$USER_HOME/.config/sasha"
@@ -107,7 +108,8 @@ After=network.target
 [Service]
 User=$USER_NAME
 WorkingDirectory=$USER_HOME
-ExecStart=/bin/bash -lc 'exec hermes serve --host 127.0.0.1 --port $GW_PORT --skip-build'
+Environment=HERMES_DASHBOARD_TUI=1
+ExecStart=/bin/bash -lc '/usr/local/lib/sasha/sasha-gw $GW_PORT'
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=120

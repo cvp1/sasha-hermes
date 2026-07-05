@@ -99,6 +99,19 @@ Restart after config changes: `sudo systemctl restart sasha-web-<user>`.
 
 Uninstall: `sudo ./uninstall.sh --user <user>` (keeps config + data).
 
+**Known first-run issues (hit live, handled):**
+- *`--skip-build … no web dist found`* — the gateway needs a prebuilt web UI.
+  Fix once: `cd ~/.hermes/hermes-agent/web && npm install && npm run build`
+  (or copy a `hermes_cli/web_dist/` from another machine on the same build).
+- *Chat says "Reconnecting…" while status is green* — on hermes builds where
+  embedded chat is opt-in, it must be enabled; the launcher exports
+  `HERMES_DASHBOARD_TUI=1` for exactly this. The Chat check reads the
+  gateway's own embedded-chat flag, so a disabled switch shows RED with a
+  plain reason instead of a false "All's well."
+- hermes CLIs drift across install tracks (`serve` vs `dashboard`-only,
+  `--cli` vs `chat`): both launchers (`sasha-gw`, `sasha-term`) probe
+  `--help` and adapt rather than assuming one CLI shape.
+
 ## Provenance
 
 Proving ground: the CC ranch fleet (`cvp1`). The loopback+proxy posture, the pump

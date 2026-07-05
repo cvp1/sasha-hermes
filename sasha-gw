@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch the hermes web gateway, tolerating CLI drift across hermes builds
+# (learned live: one household ran two different tracks — one with the
+# headless `serve` subcommand, one with `dashboard` only and embedded chat
+# gated behind --tui / HERMES_DASHBOARD_TUI=1).
+PORT="${1:-7792}"
+export HERMES_DASHBOARD_TUI=1
+run() { echo "sasha-gw: running: hermes $*" >&2; exec bash -lc "exec hermes $*"; }
+if hermes serve --help >/dev/null 2>&1; then
+  run "serve --host 127.0.0.1 --port $PORT --skip-build"
+fi
+HELP=$(hermes dashboard --help 2>&1 || true)
+ARGS="dashboard"
+echo "$HELP" | grep -q -- '--host'       && ARGS="$ARGS --host 127.0.0.1"
+echo "$HELP" | grep -q -- '--port'       && ARGS="$ARGS --port $PORT"
+echo "$HELP" | grep -q -- '--skip-build' && ARGS="$ARGS --skip-build"
+if   echo "$HELP" | grep -q -- '--no-open';    then ARGS="$ARGS --no-open"
+elif echo "$HELP" | grep -q -- '--no-browser'; then ARGS="$ARGS --no-browser"
+fi
+run "$ARGS"
