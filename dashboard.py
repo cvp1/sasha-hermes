@@ -45,9 +45,24 @@ COACH_CHIPS = CONFIG.get("coach_chips", [
 ])
 SERVICES   = CONFIG.get("services", [])          # [{"href","icon","title","desc"}]
 
+# ---- Audience: "novice" (default) or "pro" ----
+# Pro is an AUDIENCE, not a fork: same page, opt-in depth. Pro adds a skills
+# sidebar (auto-discovered), terminal tabs beside the chat, an activity feed,
+# and extra owner-defined checks. The novice surface never shows any of it.
+AUDIENCE   = CONFIG.get("audience", "novice")
+IS_PRO     = AUDIENCE == "pro"
+SKILLS_DIR = os.path.expanduser(CONFIG.get("skills_dir", "~/.hermes/skills")) if IS_PRO else None
+CHECKS_CMD = CONFIG.get("checks_cmd") if IS_PRO else None   # argv -> JSON [{label,status,detail}]
+EVENTS_CMD = CONFIG.get("events_cmd") if IS_PRO else None   # argv -> JSON {"events":[{source,type,ts}]}
+PUBLIC_PATHS = tuple(CONFIG.get("public_paths", []))        # static_dirs prefixes served WITHOUT auth
+
 # Loopback-bound ttyd terminals, reverse-proxied under /term/<id>/ behind this
 # dashboard's Basic Auth. Nothing writable listens on 0.0.0.0 anymore.
 TERM_PORTS = {"hermes": int(CONFIG.get("term_port", 7791))}
+# Pro may define several terminals: {"bash": 8081, "hermes": 8082}
+if IS_PRO:
+    for _tn, _tp in CONFIG.get("terminals", {}).items():
+        TERM_PORTS[_tn] = int(_tp)
 
 # Chat transport: "ws" = native chat bubbles over hermes's /api/ws JSON-RPC
 # gateway (`hermes serve`, loopback) — the first-party seam built for web
@@ -191,13 +206,27 @@ def _check_disk():
     except Exception:
         return ("Disk space", "YELLOW", "?")
 
+def _check_custom():
+    """Pro: owner-defined checks — argv command printing a JSON list of
+    {label, status, detail}. Contract failures degrade to one YELLOW row."""
+    try:
+        r = subprocess.run(CHECKS_CMD, capture_output=True, text=True, timeout=10)
+        rows = json.loads(r.stdout)
+        return [(c["label"], c.get("status", "YELLOW"), c.get("detail", "")) for c in rows][:12]
+    except Exception as e:
+        return [("Custom checks", "YELLOW", str(e)[:60])]
+
 def get_checks():
     """Run all checks in parallel."""
     checks = []
     with ThreadPoolExecutor(max_workers=6) as ex:
         futs = [ex.submit(f) for f in (_check_chat, _check_mcp, _check_cron, _check_disk)]
-        for f in as_completed(futs, timeout=10):
-            try: checks.append(f.result())
+        if CHECKS_CMD:
+            futs.append(ex.submit(_check_custom))
+        for f in as_completed(futs, timeout=14):
+            try:
+                r = f.result()
+                checks.extend(r) if isinstance(r, list) else checks.append(r)
             except Exception: pass
     return checks
 
@@ -441,8 +470,12 @@ class Handler(BaseHTTPRequestHandler):
         t.join(timeout=5)
 
     def do_GET(self):
-        if not self._check_auth(): return
         p = urlparse(self.path).path
+        # Owner-designated public static prefixes (report pages other tools
+        # link to) skip auth; everything else authenticates first.
+        if PUBLIC_PATHS and p.startswith(PUBLIC_PATHS):
+            return self._serve_static(p)
+        if not self._check_auth(): return
         if p.startswith("/term/"):
             return self._proxy_term()
         if p == "/gw" or p.startswith("/gw/"):
@@ -487,7 +520,13 @@ class Handler(BaseHTTPRequestHandler):
                             c = open(os.path.join(NOTES_DIR, f)).read()[:200]
                             notes.append({"file": f, "preview": c[:150]})
                 except OSError: pass
-                self._json({"checks":checks,"events":[],"notes":notes})
+                evs = []
+                if EVENTS_CMD:
+                    try:
+                        r = subprocess.run(EVENTS_CMD, capture_output=True, text=True, timeout=10)
+                        evs = json.loads(r.stdout).get("events", [])[-30:]
+                    except Exception: pass
+                self._json({"checks":checks,"events":evs,"notes":notes})
             except Exception as e: self._json({"error":str(e)})
         elif p == "/api/read":
             q = urlparse(self.path).query
@@ -568,6 +607,31 @@ def _build_chips():
 CHIPS_HTML, COACH_MAP = _build_chips()
 NICE_MAP = {aid: [a.get("label", aid), a.get("busy", "Working\u2026")] for aid, a in ACTIONS.items()}
 
+# ---- Pro: skills sidebar (auto-discovered) + hero tabs ----
+def _build_skills():
+    if not (IS_PRO and SKILLS_DIR and os.path.isdir(SKILLS_DIR)):
+        return ""
+    names = sorted(d for d in os.listdir(SKILLS_DIR)
+                   if os.path.isdir(os.path.join(SKILLS_DIR, d)) and not d.startswith("."))
+    if not names:
+        return ""
+    items = "".join(f'<div class="sk" onclick="useSkill(&quot;{n}&quot;)">{n}</div>' for n in names)
+    return (f'<aside id="side"><h2>Skills</h2><div id="sk">{items}</div>'
+            f'<div class="sk-hint">Click one &mdash; it starts in the chat input.</div></aside>')
+
+SKILLS_HTML = _build_skills()
+
+def _build_hero_tabs():
+    """Pro: the hero grows tabs \u2014 Chat (native) plus each configured terminal."""
+    extra = [t for t in TERM_PORTS if not (CHAT_MODE != "ws" and t == "hermes")]
+    if not (IS_PRO and CHAT_MODE == "ws" and extra):
+        return ""
+    tabs = ['<span class="ht ht-a" data-h="chat" onclick="heroTab(&quot;chat&quot;)">Chat</span>']
+    tabs += [f'<span class="ht" data-h="{t}" onclick="heroTab(&quot;{t}&quot;)">{t}</span>' for t in extra]
+    return '<div id="htabs">' + "".join(tabs) + '</div>'
+
+HERO_TABS = _build_hero_tabs()
+
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -591,7 +655,7 @@ HTML = """<!DOCTYPE html>
  *{margin:0;padding:0;box-sizing:border-box}
  html,body{height:100%}
  body{font-family:var(--font);background:var(--dusk);color:var(--sand);font-size:16px;line-height:1.55;
-   display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased}
+   display:flex;flex-direction:row;overflow:hidden;-webkit-font-smoothing:antialiased}
  #wrap{width:100%;max-width:1020px;margin:0 auto;padding:12px 22px 10px;display:flex;flex-direction:column;flex:1;min-height:0}
  ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}
  ::-webkit-scrollbar-thumb{background:rgba(51,41,31,.18);border-radius:4px}
@@ -703,6 +767,24 @@ HTML = """<!DOCTYPE html>
    background:var(--adobe);color:var(--moon);font-weight:700;cursor:pointer;font-family:var(--font)}
  .ap-card button.yes{background:var(--sage);border-color:var(--sage);color:#1e2a1a}
 
+ /* ── Pro: skills sidebar + hero tabs + terminal tab ── */
+ #side{width:190px;min-width:190px;background:var(--adobe);border-right:1px solid var(--line);
+   overflow-y:auto;padding:14px 10px;display:flex;flex-direction:column}
+ #side h2{font-size:11px;letter-spacing:.13em;text-transform:uppercase;color:var(--quail);
+   font-weight:700;padding:0 6px 8px}
+ .sk{padding:6px 10px;font-size:13px;font-weight:700;color:var(--sand);border-radius:8px;
+   cursor:pointer;margin-bottom:1px}
+ .sk:hover{background:var(--raise);color:var(--moon)}
+ .sk-hint{margin-top:auto;padding:10px 6px 0;font-size:11px;color:var(--faint);line-height:1.4}
+ #htabs{display:flex;gap:2px;background:var(--adobe);border-bottom:1px solid var(--line);padding:4px 8px 0}
+ .ht{padding:6px 16px;font-size:13px;font-weight:700;color:var(--quail);cursor:pointer;
+   border-radius:8px 8px 0 0;border-bottom:2px solid transparent}
+ .ht:hover{color:var(--moon)}
+ .ht-a{color:var(--moon);border-bottom-color:var(--horizon)}
+ #hterm{flex:1;min-height:0}
+ #hterm iframe{width:100%;height:100%;border:none}
+ @media (max-width:900px){ #side{display:none} }
+
  /* ── Footer + drawer ── */
  #foot{flex:none;display:flex;align-items:center;gap:10px;padding:10px 2px 0}
  #hood-t{background:none;border:none;color:var(--faint);font-size:13px;cursor:pointer;padding:4px 6px}
@@ -753,6 +835,7 @@ HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
+__SKILLS__
 <div id="wrap">
  <header id="hero">
   <div id="greet-row">
@@ -780,7 +863,7 @@ HTML = """<!DOCTYPE html>
  <div id="ro"><span id="ro-l"></span><span id="ro-t"></span><span id="ro-x" onclick="hideRo()">&times;</span></div>
  <div id="ro-results" class="rr-hide"></div>
 
- <main id="chat">__CHAT_HERO__</main>
+ <main id="chat">__HERO_TABS____CHAT_HERO__<div id="hterm" style="display:none"></div></main>
 
  <div id="foot">
   <button id="hood-t" onclick="toggleHood()">Under the hood</button>
@@ -1006,6 +1089,24 @@ function answerAsk(kind,params,ok){
   if(pl.id)req.id=pl.id;
   rpc(kind+'.respond',req).catch(function(){});
 }
+// Pro: hero tabs (Chat / terminals) + skills sidebar
+function heroTab(t){
+  trk('herotab:'+t);
+  document.querySelectorAll('.ht').forEach(function(x){x.classList.toggle('ht-a',x.dataset.h===t)});
+  const cw=document.getElementById('cwrap'),ht=document.getElementById('hterm');
+  if(!cw||!ht)return;
+  if(t==='chat'){ht.style.display='none';cw.style.display='flex';return}
+  cw.style.display='none';ht.style.display='block';
+  const want=u('/term/'+t+'/?fontSize=15');
+  const cur=ht.firstElementChild;
+  if(!cur||cur.dataset.t!==t){ht.innerHTML='';const f=document.createElement('iframe');f.dataset.t=t;f.src=want;ht.appendChild(f)}
+}
+function useSkill(n){
+  trk('skill:'+n);
+  heroTab('chat');
+  const cin=document.getElementById('cin');
+  if(cin){cin.value='/'+n+' ';cin.focus()}
+}
 if(CHATMODE==='ws')initChat();
 
 refreshAll();setInterval(refreshAll,30000);
@@ -1025,7 +1126,9 @@ HTML = (HTML.replace("__NAME__", NAME).replace("__PLACE__", PLACE)
             .replace("__COACH__", json.dumps(COACH_MAP))
             .replace("__NICE__", json.dumps(NICE_MAP))
             .replace("__CHAT_HERO__", CHAT_HERO)
-            .replace("__CHAT_MODE__", CHAT_MODE))
+            .replace("__CHAT_MODE__", CHAT_MODE)
+            .replace("__SKILLS__", SKILLS_HTML)
+            .replace("__HERO_TABS__", HERO_TABS))
 
 def main():
     import argparse

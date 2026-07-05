@@ -39,5 +39,13 @@
     { "href": "http://example.local:3000/", "icon": "&#128200;", "title": "Grafana", "desc": "Charts" }
   ],
 
-  "static_dirs": {}
+  "static_dirs": {},
+
+  "_comment_pro": "audience 'pro' adds opt-in depth on the same page: a skills sidebar (skills_dir), terminal tabs beside the chat (terminals), an activity feed (events_cmd -> {\"events\":[...]}), and owner-defined checks (checks_cmd -> [{label,status,detail}]). public_paths lists static_dirs prefixes served WITHOUT auth. The novice default shows none of this.",
+  "audience": "novice",
+  "terminals": {},
+  "skills_dir": "~/.hermes/skills",
+  "checks_cmd": null,
+  "events_cmd": null,
+  "public_paths": []
 }
