@@ -71,5 +71,10 @@ re-read before writing and merge rather than overwrite.
 
 ## Status
 
-Path A (macOS laptop) is being validated on its first real machine now; this
-document gets patched wherever reality disagrees with it.
+**Path A (macOS laptop) — VALIDATED end-to-end, 2026-07-05, n=1.** A Mac with
+no hermes and a same-day fresh `ai-os` install ran the full path and the web
+Sasha answered "what do you know about me?" from the `me/` files the product's
+interview wrote — real identity, not skeletons. Four first-run frictions were
+found and fixed along the way (hermes PATH, Python floor → official installer,
+private-repo clone auth, unbuilt web UI → auto-build). Path B (Linux household)
+is in daily use at the origin. Remaining: n>1, and Windows.
