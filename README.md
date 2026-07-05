@@ -98,7 +98,7 @@ Requires: a Linux host with systemd, `ttyd`, `tmux`, `python3` (stdlib only), an
 `hermes` on the target user's login PATH.
 
 ```bash
-sudo ./install.sh --user sheridanh --name Sheridan --place "The ranch"
+sudo ./install.sh --user alice --name Alice --place "Home"
 # prints the sign-in credential once; page at http://<host>:7790/
 ```
 

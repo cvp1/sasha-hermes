@@ -2,7 +2,7 @@
 # Sasha installer — stand up the accessibility layer on top of an existing
 # hermes install, for one user.
 #
-#   sudo ./install.sh --user sheridanh --name Sheridan [--place "The ranch"]
+#   sudo ./install.sh --user alice --name Alice [--place "Home"]
 #                     [--port 7790] [--term-port 7791] [--force-config]
 #
 # What it does:

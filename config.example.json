@@ -1,32 +1,36 @@
 {
-  "name": "Sheridan",
-  "place": "The ranch",
+  "name": "Alex",
+  "place": "Home",
   "port": 7790,
   "term_port": 7791,
   "gw_port": 7792,
   "chat_mode": "ws",
   "me_dir": "~/ai-os/me",
   "host": "0.0.0.0",
-
   "auth_file": "~/.config/sasha/auth",
   "usage_file": "~/.local/state/sasha/usage.jsonl",
   "telemetry": true,
-
   "actions": {
     "inbox-triage": {
-      "cmd": ["/usr/bin/python3", "/path/to/your/inbox_triage.py"],
+      "cmd": [
+        "/usr/bin/python3",
+        "/path/to/your/inbox_triage.py"
+      ],
       "chip": "Sort my email",
       "emoji": "&#128229;",
       "label": "Your email",
-      "busy": "Sorting your email…"
+      "busy": "Sorting your email\u2026"
     }
   },
-
-  "search_cmd": ["/usr/bin/python3", "/path/to/your/search.py"],
+  "search_cmd": [
+    "/usr/bin/python3",
+    "/path/to/your/search.py"
+  ],
   "notes_dir": "~/notes/agent-output",
-  "read_dirs": ["~/notes"],
+  "read_dirs": [
+    "~/notes"
+  ],
   "weather_url": "",
-
   "coach_chips": [
     {
       "id": "anything",
@@ -35,13 +39,15 @@
       "text": "Just type a question in the chat below, like <q>what can you help me with?</q> &mdash; I answer in plain English."
     }
   ],
-
   "services": [
-    { "href": "http://example.local:3000/", "icon": "&#128200;", "title": "Grafana", "desc": "Charts" }
+    {
+      "href": "http://example.local:3000/",
+      "icon": "&#128200;",
+      "title": "Grafana",
+      "desc": "Charts"
+    }
   ],
-
   "static_dirs": {},
-
   "_comment_pro": "audience 'pro' adds opt-in depth on the same page: a skills sidebar (skills_dir), terminal tabs beside the chat (terminals), an activity feed (events_cmd -> {\"events\":[...]}), and owner-defined checks (checks_cmd -> [{label,status,detail}]). public_paths lists static_dirs prefixes served WITHOUT auth. The novice default shows none of this.",
   "audience": "novice",
   "terminals": {},
