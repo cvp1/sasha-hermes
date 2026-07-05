@@ -20,7 +20,7 @@ set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "must run as root (sudo $0 ...)"; exit 1; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-USER_NAME="" DISPLAY_NAME="" PLACE="Home" PORT=7790 TERM_PORT=7791 FORCE_CONFIG=0
+USER_NAME="" DISPLAY_NAME="" PLACE="Home" PORT=7790 TERM_PORT=7791 GW_PORT=7792 FORCE_CONFIG=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --user) USER_NAME="$2"; shift 2;;
@@ -28,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     --place) PLACE="$2"; shift 2;;
     --port) PORT="$2"; shift 2;;
     --term-port) TERM_PORT="$2"; shift 2;;
+    --gw-port) GW_PORT="$2"; shift 2;;
     --force-config) FORCE_CONFIG=1; shift;;
     *) echo "unknown arg: $1"; exit 1;;
   esac
@@ -59,6 +60,8 @@ if [[ ! -f "$CFG_DIR/config.json" || $FORCE_CONFIG -eq 1 ]]; then
   "place": "$PLACE",
   "port": $PORT,
   "term_port": $TERM_PORT,
+  "gw_port": $GW_PORT,
+  "chat_mode": "ws",
   "auth_file": "$CFG_DIR/auth",
   "telemetry": true
 }
@@ -96,6 +99,23 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+cat > "/etc/systemd/system/sasha-gw-$USER_NAME.service" <<EOF
+[Unit]
+Description=Sasha agent gateway (hermes serve, loopback only) for $USER_NAME
+After=network.target
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$USER_HOME
+ExecStart=/bin/bash -lc 'exec hermes serve --host 127.0.0.1 --port $GW_PORT --skip-build'
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
 cat > "/etc/systemd/system/sasha-web-$USER_NAME.service" <<EOF
 [Unit]
 Description=Sasha dashboard for $USER_NAME
@@ -112,17 +132,19 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now "sasha-term-$USER_NAME" "sasha-web-$USER_NAME"
-sleep 2
+systemctl enable --now "sasha-gw-$USER_NAME" "sasha-term-$USER_NAME" "sasha-web-$USER_NAME"
+sleep 3
 
 echo "==> Verify"
-systemctl is-active "sasha-term-$USER_NAME" "sasha-web-$USER_NAME"
+systemctl is-active "sasha-gw-$USER_NAME" "sasha-term-$USER_NAME" "sasha-web-$USER_NAME"
 LAN_IP=$(hostname -I | awk '{print $1}')
-if curl -s -o /dev/null -m 3 "http://$LAN_IP:$TERM_PORT/"; then
-  echo "  !! chat pane REACHABLE ON LAN ($LAN_IP:$TERM_PORT) — should be loopback only"; exit 1
-else
-  echo "  ok: chat pane not on LAN (loopback only)"
-fi
+for P in $TERM_PORT $GW_PORT; do
+  if curl -s -o /dev/null -m 3 "http://$LAN_IP:$P/"; then
+    echo "  !! backend port $P REACHABLE ON LAN — should be loopback only"; exit 1
+  else
+    echo "  ok: port $P not on LAN (loopback only)"
+  fi
+done
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 3 "http://127.0.0.1:$PORT/")
 [[ "$CODE" == "401" ]] && echo "  ok: dashboard requires sign-in" || echo "  ?? dashboard returned $CODE without auth"
 

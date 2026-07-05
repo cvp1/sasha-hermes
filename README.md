@@ -37,14 +37,25 @@ warm light reads safe and approachable for non-technical users; dark reads
 
 ```
 browser ──HTTP Basic Auth──▶ dashboard.py (:7790, LAN)
-                               ├─ /            the page
+                               ├─ /            the page (native chat bubbles)
                                ├─ /api/*       checks · search · actions · telemetry
-                               └─ /term/hermes reverse-proxy ──▶ ttyd (:7791, LOOPBACK ONLY)
-                                                                  └─ tmux ─ hermes
+                               ├─ /gw/*        reverse-proxy ──▶ hermes serve (:7792, LOOPBACK ONLY)
+                               │                                  └─ /api/ws JSON-RPC gateway
+                               └─ /term/hermes reverse-proxy ──▶ ttyd (:7791, LOOPBACK ONLY, fallback)
+                                                                  └─ tmux ─ hermes REPL
 ```
 
-- **ttyd binds loopback only** — the writable terminal is never on the LAN; it is
-  reached exclusively through the dashboard's authenticated reverse proxy.
+**The chat is native, not a terminal.** `chat_mode: "ws"` (the default the
+installer writes) renders real conversation bubbles that speak hermes's own
+`/api/ws` JSON-RPC gateway — the first-party seam hermes ships for web clients.
+Streaming tokens, plain-language status ("Thinking…"), and approval requests
+rendered as yes/no cards. The proxy rewrites `Host`/`Origin` to satisfy the
+gateway's loopback rebinding guard. `chat_mode: "term"` keeps the legacy ttyd
+terminal embed as a fallback.
+
+- **Both backends bind loopback only** — the gateway and the terminal are never
+  on the LAN; they are reached exclusively through the dashboard's
+  authenticated reverse proxy (the installer verifies this and fails if not).
 - **No shell endpoint** — the web API can only run the commands you list in
   `config.json` (`actions`), verbatim argv, no shell interpolation.
 - **File reads are allowlisted** (`read_dirs`), realpath-checked.

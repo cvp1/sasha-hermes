@@ -49,6 +49,12 @@ SERVICES   = CONFIG.get("services", [])          # [{"href","icon","title","desc
 # dashboard's Basic Auth. Nothing writable listens on 0.0.0.0 anymore.
 TERM_PORTS = {"hermes": int(CONFIG.get("term_port", 7791))}
 
+# Chat transport: "ws" = native chat bubbles over hermes's /api/ws JSON-RPC
+# gateway (`hermes serve`, loopback) — the first-party seam built for web
+# clients. "term" = legacy ttyd terminal embed (fallback).
+CHAT_MODE = CONFIG.get("chat_mode", "term")
+GW_PORT   = int(CONFIG.get("gw_port", 9119))
+
 # ---- INT-4 usage telemetry: aggregate EVENT COUNTS only. One JSONL line per
 # UI event ({ts, e, ip}) — never search queries, terminal content, or any
 # transcript. /api/usage serves per-day aggregates + a 30-min-gap session
@@ -99,12 +105,13 @@ def _api_json(url, timeout=3):
     except: return None
 
 def _check_chat():
-    """GREEN only when the pane is reachable AND the agent process is alive —
-    a reachable ttyd whose REPL died renders the holding screen, and the
-    status must say so instead of a false 'All's well'."""
+    """GREEN only when the chat transport is reachable AND the agent process
+    is alive — a reachable port whose agent died must say so instead of a
+    false 'All's well'."""
+    port = GW_PORT if CHAT_MODE == "ws" else TERM_PORTS["hermes"]
     port_ok = False
     try:
-        s = socket.create_connection(("127.0.0.1", TERM_PORTS["hermes"]), timeout=2); s.close()
+        s = socket.create_connection(("127.0.0.1", port), timeout=2); s.close()
         port_ok = True
     except OSError:
         pass
@@ -353,6 +360,43 @@ class Handler(BaseHTTPRequestHandler):
             except OSError: pass
             self.close_connection = True
 
+    def _proxy_gw(self):
+        """Reverse-proxy /gw/* to the hermes gateway (`hermes serve`, loopback),
+        under this dashboard's auth. The gateway's DNS-rebinding guard only
+        accepts loopback Host values, and its websocket origin check is
+        localhost-only — so both Host and Origin are rewritten. Same tunnel
+        rules as _proxy_term: ws upgrades keep their pinned connection,
+        everything else gets Connection: close."""
+        try:
+            backend = socket.create_connection(("127.0.0.1", GW_PORT), timeout=5)
+        except OSError as e:
+            self._json({"error": f"gateway offline: {e}"}, 502)
+            return
+        try:
+            fwd = self.path[len("/gw"):] or "/"
+            is_ws = self.headers.get("Upgrade", "").lower() == "websocket"
+            head = f"{self.command} {fwd} {self.request_version}\r\n"
+            for k, v in self.headers.items():
+                kl = k.lower()
+                if kl in ("host", "origin"):
+                    continue
+                if not is_ws and kl in ("connection", "keep-alive"):
+                    continue
+                head += f"{k}: {v}\r\n"
+            head += f"Host: 127.0.0.1:{GW_PORT}\r\n"
+            head += f"Origin: http://127.0.0.1:{GW_PORT}\r\n"
+            if not is_ws:
+                head += "Connection: close\r\n"
+            head += "\r\n"
+            backend.sendall(head.encode("latin-1"))
+            self._pump(self.connection, backend)
+        finally:
+            try: backend.close()
+            except OSError: pass
+            try: self.connection.setblocking(True)
+            except OSError: pass
+            self.close_connection = True
+
     @staticmethod
     def _pump(a, b):
         """Bidirectional tunnel between two sockets — one thread per direction,
@@ -390,6 +434,8 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p.startswith("/term/"):
             return self._proxy_term()
+        if p == "/gw" or p.startswith("/gw/"):
+            return self._proxy_gw()
         if p == "/":
             track("load", self.client_address[0])
             self._html(HTML)  # skills rendered inline in HTML
@@ -462,6 +508,8 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         if p.startswith("/term/"):
             return self._proxy_term()
+        if p == "/gw" or p.startswith("/gw/"):
+            return self._proxy_gw()
         if p.startswith("/api/run/"):
             aid = p[len("/api/run/"):]
             act = ACTIONS.get(aid)
@@ -620,6 +668,29 @@ HTML = """<!DOCTYPE html>
  #chat{flex:1;min-height:180px;display:flex;flex-direction:column;margin-top:12px;border-radius:14px;
    border:1px solid var(--line);background:#F1EADA;overflow:hidden}
  #chat iframe{flex:1;width:100%;border:none}
+ /* native ws chat */
+ #cwrap{flex:1;display:flex;flex-direction:column;min-height:0}
+ #cmsgs{flex:1;overflow-y:auto;padding:16px 16px 6px;display:flex;flex-direction:column;gap:10px}
+ .cb{max-width:76%;padding:10px 14px;border-radius:14px;font-size:15px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+ .cb-u{align-self:flex-end;background:var(--horizon);color:#FDF8EE;border-bottom-right-radius:4px}
+ .cb-a{align-self:flex-start;background:var(--adobe);color:var(--moon);border:1px solid var(--line);border-bottom-left-radius:4px}
+ .cb-e{align-self:center;background:var(--bad-bg);color:var(--bad);font-size:13px;border-radius:10px}
+ .cb-note{align-self:center;color:var(--faint);font-size:12px}
+ #cstatus{min-height:20px;padding:0 18px 4px;color:var(--quail);font-size:13px;font-style:italic}
+ #crow{display:flex;gap:8px;padding:8px 10px 10px;border-top:1px solid var(--line);background:var(--adobe)}
+ #cin{flex:1;background:#FDFAF4;border:1px solid var(--line);border-radius:12px;color:var(--moon);
+   padding:11px 14px;font-size:16px;outline:none;font-family:var(--font);resize:none;max-height:120px}
+ #cin:focus{border-color:var(--horizon)}
+ #cin::placeholder{color:var(--faint)}
+ #csend{background:var(--horizon);border:none;border-radius:12px;color:#FDF8EE;padding:0 22px;
+   font-size:15px;font-weight:700;cursor:pointer}
+ #csend:hover{background:var(--ember)}
+ #csend:disabled{opacity:.5;cursor:default}
+ .ap-card{align-self:flex-start;background:var(--warn-bg);border:1px dashed var(--warn);border-radius:12px;
+   padding:12px 14px;font-size:14px;color:var(--moon);max-width:76%}
+ .ap-card button{margin:8px 8px 0 0;padding:7px 14px;border-radius:999px;border:1px solid var(--line);
+   background:var(--adobe);color:var(--moon);font-weight:700;cursor:pointer;font-family:var(--font)}
+ .ap-card button.yes{background:var(--sage);border-color:var(--sage);color:#1e2a1a}
 
  /* ── Footer + drawer ── */
  #foot{flex:none;display:flex;align-items:center;gap:10px;padding:10px 2px 0}
@@ -698,7 +769,7 @@ HTML = """<!DOCTYPE html>
  <div id="ro"><span id="ro-l"></span><span id="ro-t"></span><span id="ro-x" onclick="hideRo()">&times;</span></div>
  <div id="ro-results" class="rr-hide"></div>
 
- <main id="chat"><iframe src="/term/hermes/?fontSize=16" title="Chat with Sasha"></iframe></main>
+ <main id="chat">__CHAT_HERO__</main>
 
  <div id="foot">
   <button id="hood-t" onclick="toggleHood()">Under the hood</button>
@@ -713,7 +784,7 @@ HTML = """<!DOCTYPE html>
 </div>
 <script>
 // INT-4 telemetry beacon — event names only, fire-and-forget
-function trk(e){try{fetch('/api/t?e='+encodeURIComponent(e))}catch(_){}}
+function trk(e){try{fetch(new URL('/api/t?e='+encodeURIComponent(e),location.origin).href)}catch(_){}}
 
 // Greeting — time-aware, plain words
 (function(){
@@ -746,7 +817,10 @@ function toggleHood(open){
   hd.style.display=show?'block':'none';
 }
 
-async function ap(p,m){const r=await fetch(p,{method:m||'GET'});return r.json()}
+// Build absolute same-origin URLs — location.origin never carries user:pass,
+// so these work even when the page was opened with credentials in the URL.
+function u(p){return new URL(p,location.origin).href}
+async function ap(p,m){const r=await fetch(u(p),{method:m||'GET'});return r.json()}
 
 // Status — plain words up top, detail in the drawer
 async function refreshAll(){
@@ -817,15 +891,130 @@ async function run(n){
   setTimeout(refreshAll,3000);
 }
 
+// ── Native chat over hermes's /api/ws JSON-RPC gateway (CHAT_MODE "ws") ──
+// NDJSON JSON-RPC both ways. Turn: prompt.submit -> message.start ->
+// message.delta* -> message.complete. Approvals arrive as *.request events
+// and are answered with the paired *.respond RPC.
+const CHATMODE='__CHAT_MODE__';
+let ws=null,rpcId=10,pend={},sid=null,curBubble=null,streaming=false,backoff=2;
+function el(t,c,txt){const e=document.createElement(t);if(c)e.className=c;if(txt!==undefined)e.textContent=txt;return e}
+function addMsg(cls,txt){const m=el('div','cb '+cls,txt);document.getElementById('cmsgs').appendChild(m);scrollC();return m}
+function scrollC(){const b=document.getElementById('cmsgs');b.scrollTop=b.scrollHeight}
+function setStatus(t){document.getElementById('cstatus').textContent=t||''}
+function setSend(on){document.getElementById('csend').disabled=!on}
+function initChat(){
+  document.getElementById('csend').onclick=sendMsg;
+  const cin=document.getElementById('cin');
+  cin.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMsg()}});
+  connect();
+}
+async function connect(){
+  setStatus('Connecting…');
+  let tok='';
+  try{const t=await (await fetch(u('/gw/'))).text();const m=t.match(/__HERMES_SESSION_TOKEN__="([^"]+)"/);if(m)tok=m[1]}catch(_){}
+  if(!tok){ // gateway down or SPA unreadable — retry the fetch, don't hammer 403s
+    setStatus('Waiting for the agent…');
+    setTimeout(connect,backoff*1000);backoff=Math.min(backoff*2,30);return;
+  }
+  const proto=location.protocol==='https:'?'wss://':'ws://';
+  try{ws=new WebSocket(proto+location.host+'/gw/api/ws?token='+encodeURIComponent(tok))}
+  catch(_){setStatus('Reconnecting…');setTimeout(connect,backoff*1000);backoff=Math.min(backoff*2,30);return}
+  ws.onopen=function(){backoff=2;setStatus('');attach()};
+  ws.onmessage=function(ev){String(ev.data).split(String.fromCharCode(10)).forEach(function(line){
+    line=line.trim();if(!line)return;
+    let o;try{o=JSON.parse(line)}catch(_){return}
+    handle(o);
+  })};
+  ws.onclose=function(){setStatus('Reconnecting…');streaming=false;setSend(true);setTimeout(connect,backoff*1000);backoff=Math.min(backoff*2,30)};
+  ws.onerror=function(){try{ws.close()}catch(_){}};
+}
+function rpc(method,params){return new Promise(function(res,rej){const id=rpcId++;pend[id]={res:res,rej:rej};ws.send(JSON.stringify({jsonrpc:'2.0',id:id,method:method,params:params}))})}
+async function attach(){
+  const saved=localStorage.getItem('sashaSid')||'';
+  try{
+    let r=null;
+    if(saved){try{r=await rpc('session.resume',{session_id:saved})}catch(_){r=null}}
+    if(!r)r=await rpc('session.create',{});
+    sid=r.session_id||saved;
+    localStorage.setItem('sashaSid',sid);
+    renderTranscript(r.messages||[]);
+    if(!(r.messages||[]).length)addMsg('cb-note','Say hello — I answer in plain English.');
+  }catch(e){setStatus('');addMsg('cb-e','I could not reach the agent just now — I will keep trying.')}
+}
+function renderTranscript(ms){
+  const box=document.getElementById('cmsgs');box.innerHTML='';
+  ms.forEach(function(m){
+    const role=m.role||m.type||'';
+    let txt=(typeof m.content==='string')?m.content:(m.text||'');
+    if(!txt&&Array.isArray(m.content))txt=m.content.map(function(p){return p.text||''}).join('');
+    if(!txt)return;
+    if(role==='user')addMsg('cb-u',txt);
+    else if(role==='assistant')addMsg('cb-a',txt);
+  });
+  scrollC();
+}
+async function sendMsg(){
+  const cin=document.getElementById('cin');const txt=cin.value.trim();
+  if(!txt||streaming||!ws||ws.readyState!==1||!sid)return;
+  trk('chat:send');
+  cin.value='';addMsg('cb-u',txt);streaming=true;setSend(false);curBubble=null;setStatus('Thinking…');
+  try{await rpc('prompt.submit',{session_id:sid,text:txt})}
+  catch(e){streaming=false;setSend(true);setStatus('');addMsg('cb-e','That did not go through — try again.')}
+}
+function handle(o){
+  if(o.id!==undefined&&pend[o.id]){const p=pend[o.id];delete pend[o.id];if(o.error)p.rej(o.error);else p.res(o.result);return}
+  if(o.method!=='event'||!o.params)return;
+  const t=o.params.type,pl=o.params.payload||{};
+  if(o.params.session_id&&sid&&o.params.session_id!==sid)return;
+  if(t==='message.start'){curBubble=addMsg('cb-a','');setStatus('')}
+  else if(t==='message.delta'){if(!curBubble)curBubble=addMsg('cb-a','');curBubble.textContent+=(pl.text||'');scrollC()}
+  else if(t==='thinking.delta'){if(pl.text)setStatus(pl.text)}
+  else if(t==='tool.start'){setStatus('Working on it…')}
+  else if(t==='message.complete'){
+    if(pl.text){if(!curBubble)curBubble=addMsg('cb-a','');curBubble.textContent=pl.text}
+    curBubble=null;streaming=false;setSend(true);setStatus('');scrollC();
+  }
+  else if(t==='error'){addMsg('cb-e',pl.message||pl.text||'Something went wrong — try again.');streaming=false;setSend(true);setStatus('')}
+  else if(t==='approval.request'||t==='clarify.request'||t==='sudo.request'||t==='secret.request'){renderAsk(t,o.params)}
+}
+function renderAsk(t,params){
+  const pl=params.payload||{};
+  const card=el('div','ap-card');
+  card.appendChild(el('div','',pl.message||pl.prompt||pl.question||pl.text||'Sasha needs your OK for something.'));
+  const kind=t.split('.')[0];
+  const yes=el('button','yes','Yes, go ahead');const no=el('button','','No');
+  yes.onclick=function(){answerAsk(kind,params,true);card.remove()};
+  no.onclick=function(){answerAsk(kind,params,false);card.remove()};
+  card.appendChild(yes);card.appendChild(no);
+  document.getElementById('cmsgs').appendChild(card);scrollC();
+}
+function answerAsk(kind,params,ok){
+  const pl=params.payload||{};
+  const req={session_id:params.session_id||sid,approved:ok,response:ok?'yes':'no'};
+  if(pl.request_id)req.request_id=pl.request_id;
+  if(pl.id)req.id=pl.id;
+  rpc(kind+'.respond',req).catch(function(){});
+}
+if(CHATMODE==='ws')initChat();
+
 refreshAll();setInterval(refreshAll,30000);
 </script>
 </body>
 </html>"""
 
+if CHAT_MODE == "ws":
+    CHAT_HERO = ('<div id="cwrap"><div id="cmsgs"></div><div id="cstatus"></div>'
+                 '<div id="crow"><textarea id="cin" rows="1" placeholder="Type here — plain words work"></textarea>'
+                 '<button id="csend">Send</button></div></div>')
+else:
+    CHAT_HERO = '<iframe src="/term/hermes/?fontSize=16" title="Chat with Sasha"></iframe>'
+
 HTML = (HTML.replace("__NAME__", NAME).replace("__PLACE__", PLACE)
             .replace("__CHIPS__", CHIPS_HTML)
             .replace("__COACH__", json.dumps(COACH_MAP))
-            .replace("__NICE__", json.dumps(NICE_MAP)))
+            .replace("__NICE__", json.dumps(NICE_MAP))
+            .replace("__CHAT_HERO__", CHAT_HERO)
+            .replace("__CHAT_MODE__", CHAT_MODE))
 
 def main():
     import argparse
