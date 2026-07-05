@@ -62,27 +62,61 @@ fi
 echo "==> me/ passport bridge (~/.hermes/SOUL.md -> ~/ai-os/me/)"
 python3 "$HERE/me_bridge.py"
 
+# Find the hermes web/ dir (needed to build the UI once). Official installer
+# lays it under $HERMES_HOME/hermes-agent; git checkouts vary.
+find_web_dir() {
+  for d in "${HERMES_HOME:-$HOME/.hermes}/hermes-agent/web" \
+           "$HOME/.hermes/hermes-agent/web"; do
+    [[ -f "$d/package.json" ]] && { echo "$d"; return 0; }
+  done
+  # last resort: ask hermes' own python where the package lives
+  local p; p="$(hermes --which-web 2>/dev/null || true)"
+  [[ -n "$p" && -f "$p/package.json" ]] && { echo "$p"; return 0; }
+  return 1
+}
+
+# Build the web UI once if it's missing (uses hermes' own node if present).
+build_web_ui() {
+  local w; w="$(find_web_dir)" || { echo "   couldn't find hermes' web/ dir — build manually then re-run."; return 1; }
+  if ! command -v npm >/dev/null; then
+    echo "   the web UI needs building once, but 'npm' isn't on your PATH."
+    echo "   install Node (brew install node), then:  cd \"$w\" && npm install && npm run build"
+    return 1
+  fi
+  echo "   building the hermes web UI once (a few minutes)…"
+  ( cd "$w" && npm install && npm run build ) || { echo "   build failed — see output above."; return 1; }
+  return 0
+}
+
+start_gateway() {   # $1 = serve|dashboard
+  if [[ "$1" == "dashboard" ]]; then
+    HERMES_DASHBOARD_TUI=1 hermes dashboard --host 127.0.0.1 --port "$GW_PORT" --skip-build --no-open \
+      > "$CFG_DIR/gateway.log" 2>&1 &
+  else
+    HERMES_DASHBOARD_TUI=1 hermes serve --host 127.0.0.1 --port "$GW_PORT" --skip-build \
+      > "$CFG_DIR/gateway.log" 2>&1 &
+  fi
+  GW_PID=$!
+}
+
 echo "==> starting hermes gateway on 127.0.0.1:$GW_PORT"
-HERMES_DASHBOARD_TUI=1 hermes serve --host 127.0.0.1 --port "$GW_PORT" --skip-build \
-  > "$CFG_DIR/gateway.log" 2>&1 &
-GW_PID=$!
+MODE=serve; BUILT=0
+start_gateway "$MODE"
 trap 'kill $GW_PID 2>/dev/null || true' EXIT
 
-for i in $(seq 1 30); do
+for i in $(seq 1 40); do
   curl -s -m 2 -o /dev/null "http://127.0.0.1:$GW_PORT/" && break
-  # older hermes builds ship `dashboard` instead of `serve`, or need a web build
   if ! kill -0 $GW_PID 2>/dev/null; then
     if grep -q "invalid choice: 'serve'" "$CFG_DIR/gateway.log"; then
-      echo "   this hermes has no 'serve' — trying 'hermes dashboard --no-open'"
-      HERMES_DASHBOARD_TUI=1 hermes dashboard --host 127.0.0.1 --port "$GW_PORT" --skip-build --no-open \
-        > "$CFG_DIR/gateway.log" 2>&1 &
-      GW_PID=$!
-    elif grep -q "no web dist" "$CFG_DIR/gateway.log"; then
-      echo "   hermes needs its web UI built once:"
-      echo "     cd \$(python3 -c 'import hermes_cli,os;print(os.path.dirname(hermes_cli.__file__))')/../web && npm install && npm run build"
-      echo "   (or drop --skip-build by editing this script)"; exit 1
+      echo "   this hermes has no 'serve' — using 'hermes dashboard'"
+      MODE=dashboard; start_gateway "$MODE"
+    elif grep -q "no web dist" "$CFG_DIR/gateway.log" && [[ "$BUILT" -eq 0 ]]; then
+      BUILT=1
+      build_web_ui || exit 1
+      echo "   web UI built — restarting gateway"
+      start_gateway "$MODE"
     else
-      echo "   gateway failed — tail of $CFG_DIR/gateway.log:"; tail -5 "$CFG_DIR/gateway.log"; exit 1
+      echo "   gateway failed — tail of $CFG_DIR/gateway.log:"; tail -6 "$CFG_DIR/gateway.log"; exit 1
     fi
   fi
   sleep 1
