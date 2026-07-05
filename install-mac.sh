@@ -49,6 +49,7 @@ mkdir -p "$LIB"
 install -m 0644 "$HERE/dashboard.py"  "$LIB/dashboard.py"
 install -m 0755 "$HERE/sasha-gw"      "$LIB/sasha-gw"
 install -m 0755 "$HERE/me_bridge.py"  "$LIB/me_bridge.py"
+install -m 0644 "$HERE/capabilities.py" "$LIB/capabilities.py"
 
 echo "==> Config + auth"
 mkdir -p "$CFG_DIR"

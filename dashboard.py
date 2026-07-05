@@ -1169,6 +1169,12 @@ def main():
     ap.add_argument("--host", default=CONFIG.get("host", "0.0.0.0"))
     args = ap.parse_args()
     seed_me_dir()
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import capabilities
+        capabilities.update(me_dir=ME_DIR)
+    except Exception:
+        pass  # capability inventory is best-effort; never block the dashboard
     s = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dashboard at http://{args.host}:{args.port}", file=sys.stderr)
     try: s.serve_forever()

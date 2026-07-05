@@ -51,6 +51,7 @@ install -m 0644 "$HERE/dashboard.py" /usr/local/lib/sasha/dashboard.py
 install -m 0755 "$HERE/sasha-term"  /usr/local/lib/sasha/sasha-term
 install -m 0755 "$HERE/sasha-gw"    /usr/local/lib/sasha/sasha-gw
 install -m 0755 "$HERE/me_bridge.py" /usr/local/lib/sasha/me_bridge.py
+install -m 0644 "$HERE/capabilities.py" /usr/local/lib/sasha/capabilities.py
 
 echo "==> Config + auth for $USER_NAME"
 CFG_DIR="$USER_HOME/.config/sasha"

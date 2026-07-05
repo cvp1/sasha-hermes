@@ -73,7 +73,13 @@ This layer seeds skeletons if they're absent (never overwrites) and wires
 hermes to them via a marked block in `~/.hermes/SOUL.md` (`me_bridge.py`,
 idempotent) — so the agent reads them every session, treats HOW-I-WORK's
 rules as binding, and routes "that's not how I work" corrections back into
-the files. A person can start on either surface and graduate to the other
+the files. The passport also carries **`CAPABILITIES.md`** — what's wired on each
+surface (this layer writes its hermes skills + connectors from live state on
+boot; the Claude Code product writes its command roster + connector). Either
+Sasha reads the whole file and routes you to the surface that has what you
+ask for.
+
+A person can start on either surface and graduate to the other
 without losing who they are — both Sashas read the same passport, and both
 are told they are not the only writer (re-read before write, merge, never
 overwrite).
