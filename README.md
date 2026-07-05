@@ -65,6 +65,19 @@ terminal embed as a fallback.
   `tmux window-size latest` so mixed-size clients don't leave dotted artifacts, and
   ttyd runs the canvas renderer so privacy browsers that block WebGL still paint.
 
+## The me/ passport — graduation between Sasha surfaces
+
+`~/ai-os/me/` (`WHOAMI.md` + `HOW-I-WORK.md`) is a shared identity schema:
+the **same files** Sasha on Claude Code writes during its setup interview.
+This layer seeds skeletons if they're absent (never overwrites) and wires
+hermes to them via a marked block in `~/.hermes/SOUL.md` (`me_bridge.py`,
+idempotent) — so the agent reads them every session, treats HOW-I-WORK's
+rules as binding, and routes "that's not how I work" corrections back into
+the files. A person can start on either surface and graduate to the other
+without losing who they are — both Sashas read the same passport, and both
+are told they are not the only writer (re-read before write, merge, never
+overwrite).
+
 ## Telemetry (honest disclosure)
 
 The page logs **aggregate event counts only** — page loads, chip clicks, a flag

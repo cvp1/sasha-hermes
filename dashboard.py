@@ -45,6 +45,38 @@ COACH_CHIPS = CONFIG.get("coach_chips", [
 ])
 SERVICES   = CONFIG.get("services", [])          # [{"href","icon","title","desc"}]
 
+# ---- The me/ passport (shared identity across Sasha surfaces) ----
+# ~/ai-os/me/ is the SAME schema Sasha-on-Claude-Code writes: WHOAMI.md +
+# HOW-I-WORK.md. Either product reads and writes it; neither owns it — a user
+# graduates between surfaces without losing who they are. Seeded here if
+# absent (never overwritten); wired into hermes via the operational-context
+# bridge block (me_bridge.py).
+ME_DIR = os.path.expanduser(CONFIG.get("me_dir", "~/ai-os/me"))
+
+
+def seed_me_dir():
+    """Create skeleton me/ files if absent. Never overwrite — the files may
+    already carry a whole identity written by the user's other Sasha."""
+    if not ME_DIR:
+        return
+    try:
+        os.makedirs(ME_DIR, exist_ok=True)
+        w = os.path.join(ME_DIR, "WHOAMI.md")
+        h = os.path.join(ME_DIR, "HOW-I-WORK.md")
+        if not os.path.exists(w):
+            with open(w, "w") as f:
+                f.write(f"# Who I am\n\n- Name: {NAME}\n- Home base: {PLACE}\n\n"
+                        "(Sasha fills this in as you talk — or open it and write it "
+                        "yourself. This file is yours, and every Sasha surface reads it.)\n")
+        if not os.path.exists(h):
+            with open(h, "w") as f:
+                f.write("# How I work\n\n"
+                        "- Style: short, plain answers (default — refine me)\n"
+                        "- Never without asking: send anything anywhere, delete anything "
+                        "(default — refine me)\n")
+    except OSError:
+        pass
+
 # ---- Audience: "novice" (default) or "pro" ----
 # Pro is an AUDIENCE, not a fork: same page, opt-in depth. Pro adds a skills
 # sidebar (auto-discovered), terminal tabs beside the chat, an activity feed,
@@ -1136,6 +1168,7 @@ def main():
     ap.add_argument("--port", type=int, default=int(CONFIG.get("port", 7790)))
     ap.add_argument("--host", default=CONFIG.get("host", "0.0.0.0"))
     args = ap.parse_args()
+    seed_me_dir()
     s = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dashboard at http://{args.host}:{args.port}", file=sys.stderr)
     try: s.serve_forever()

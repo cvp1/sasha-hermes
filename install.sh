@@ -50,6 +50,7 @@ install -d /usr/local/lib/sasha
 install -m 0644 "$HERE/dashboard.py" /usr/local/lib/sasha/dashboard.py
 install -m 0755 "$HERE/sasha-term"  /usr/local/lib/sasha/sasha-term
 install -m 0755 "$HERE/sasha-gw"    /usr/local/lib/sasha/sasha-gw
+install -m 0755 "$HERE/me_bridge.py" /usr/local/lib/sasha/me_bridge.py
 
 echo "==> Config + auth for $USER_NAME"
 CFG_DIR="$USER_HOME/.config/sasha"
@@ -83,6 +84,9 @@ else
   NEW_CRED=""
   echo "    keeping existing auth"
 fi
+
+echo "==> me/ passport bridge (shared identity with Sasha on Claude Code)"
+su - "$USER_NAME" -c "python3 /usr/local/lib/sasha/me_bridge.py"
 
 echo "==> Systemd units"
 THEME='theme={"background":"#F1EADA","foreground":"#3A2F23","cursor":"#B4552D","cursorAccent":"#F1EADA","selectionBackground":"#E3D5B8","black":"#5A5044","red":"#B3392E","green":"#4F7A3F","yellow":"#9C6D1E","blue":"#3E6C8E","magenta":"#8E5A7C","cyan":"#40767C","white":"#EFE6D2","brightBlack":"#8A7A64","brightRed":"#C4483C","brightGreen":"#5E8F4C","brightYellow":"#B37F24","brightBlue":"#4E7DA3","brightMagenta":"#A06B8E","brightCyan":"#4E8A91","brightWhite":"#FDFAF4"}'
