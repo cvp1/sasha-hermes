@@ -21,7 +21,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 command -v python3 >/dev/null || { echo "need python3"; exit 1; }
-command -v hermes  >/dev/null || { echo "need hermes on PATH:  pip install hermes-agent && hermes setup"; exit 1; }
+if ! command -v hermes >/dev/null; then
+  UB="$(python3 -m site --user-base 2>/dev/null)/bin"
+  if [[ -x "$UB/hermes" ]]; then
+    echo "found hermes at $UB (not on PATH) — using it for this run."
+    echo "make it permanent:  echo 'export PATH=\"$UB:\$PATH\"' >> ~/.zshrc"
+    export PATH="$UB:$PATH"
+  else
+    echo "need hermes:  pip install hermes-agent && hermes setup"
+    echo "(command not found after installing? PATH fix in GRADUATION.md step 2)"
+    exit 1
+  fi
+fi
 
 CFG_DIR="$HOME/.config/sasha"
 mkdir -p "$CFG_DIR"

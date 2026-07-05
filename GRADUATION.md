@@ -27,6 +27,16 @@ are and how you like things.
    pip install hermes-agent
    hermes setup        # the wizard: pick a provider, paste its key
    ```
+   **Two Mac stumbles, both normal:**
+   - *"externally-managed-environment"* from pip → use `pipx install
+     hermes-agent` instead (`brew install pipx` first if needed).
+   - *"command not found: hermes"* after install → the install worked; your
+     shell just can't see it. Fix:
+     ```sh
+     BIN="$(python3 -m site --user-base)/bin"
+     echo "export PATH=\"$BIN:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
+     ```
+     (pipx users: `pipx ensurepath`, then open a new terminal.)
 3. **Run this layer:**
    ```sh
    git clone https://github.com/cvp1/sasha-hermes && cd sasha-hermes
