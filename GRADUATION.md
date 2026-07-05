@@ -46,6 +46,16 @@ are and how you like things.
    access token as the git password. Public clone works with neither.)
    It prints your sign-in once, wires the passport bridge into hermes, starts
    the gateway + the page, and opens at `http://127.0.0.1:7790/`. Ctrl-C stops it.
+
+   **Make it a service (survives logout/reboot, no terminal held open):**
+   ```sh
+   ./install-mac.sh --name YourName --place "Home"
+   ```
+   Two per-user launchd agents auto-start on login and restart on crash — no
+   root. (`./install-mac.sh --uninstall` to stop.) A laptop still sleeps: the
+   page pauses when the Mac is asleep, resumes on wake. Run `./run-mac.sh`
+   once first — it builds hermes' web UI and proves your config; the service
+   installer promotes that to a background service.
 4. **Prove the graduation:** ask the web Sasha *"what do you know about me
    from your files?"* — it should answer from the same `me/` files your
    Claude Code Sasha wrote. Correct it ("shorter, please") and check
