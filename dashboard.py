@@ -98,16 +98,22 @@ def _api_json(url, timeout=3):
         with urllib.request.urlopen(url, timeout=timeout) as r: return json.loads(r.read())
     except: return None
 
-def _check_hermes():
-    up = _pgrep("hermes")
-    return ("Hermes", "GREEN" if up else "YELLOW", "agent running" if up else "not running right now")
-
 def _check_chat():
+    """GREEN only when the pane is reachable AND the agent process is alive —
+    a reachable ttyd whose REPL died renders the holding screen, and the
+    status must say so instead of a false 'All's well'."""
+    port_ok = False
     try:
         s = socket.create_connection(("127.0.0.1", TERM_PORTS["hermes"]), timeout=2); s.close()
-        return ("Chat", "GREEN", "ready")
+        port_ok = True
     except OSError:
-        return ("Chat", "RED", "chat pane offline")
+        pass
+    agent_ok = _pgrep("hermes")
+    if port_ok and agent_ok:
+        return ("Chat", "GREEN", "ready")
+    if port_ok:
+        return ("Chat", "YELLOW", "waking the agent up")
+    return ("Chat", "RED", "chat pane offline")
 
 def _check_mcp():
     global _cache
@@ -138,6 +144,9 @@ def _check_mcp():
         return ("Connections", "YELLOW", "config?")
 
 def _check_cron():
+    """Scheduled count alone lies — hermes's cron ticker is a thread that can
+    die while chat still answers. Read its own liveness heartbeat
+    (~/.hermes/cron/ticker_last_success) and go YELLOW when it's stale."""
     global _cache
     now = time.time()
     if _cache["cron"] and now - _cache["cron_ts"] < 60:
@@ -145,7 +154,12 @@ def _check_cron():
     try:
         r = subprocess.run(["bash", "-lc", "hermes cron list"], capture_output=True, text=True, timeout=8)
         n = sum(1 for l in r.stdout.split("\n") if "[active]" in l)
-        rv = ("Routines", "GREEN" if n else "YELLOW", f"{n} scheduled")
+        hb = os.path.join(HOME, ".hermes", "cron", "ticker_last_success")
+        stale = os.path.exists(hb) and (now - os.path.getmtime(hb)) > 7200
+        if n and stale:
+            rv = ("Routines", "YELLOW", f"{n} scheduled, but none have run in a while")
+        else:
+            rv = ("Routines", "GREEN" if n else "YELLOW", f"{n} scheduled")
         _cache["cron"] = rv; _cache["cron_ts"] = now
         return rv
     except Exception:
@@ -163,7 +177,7 @@ def get_checks():
     """Run all checks in parallel."""
     checks = []
     with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = [ex.submit(f) for f in (_check_hermes, _check_chat, _check_mcp, _check_cron, _check_disk)]
+        futs = [ex.submit(f) for f in (_check_chat, _check_mcp, _check_cron, _check_disk)]
         for f in as_completed(futs, timeout=10):
             try: checks.append(f.result())
             except Exception: pass
@@ -194,7 +208,9 @@ class Handler(BaseHTTPRequestHandler):
             user, pwd = decoded.split(":", 1)
             stored = open(AUTH_FILE).read().strip()
             expected_user, expected_pwd = stored.split(":", 1)
-            if user == expected_user and pwd == expected_pwd:
+            import hmac
+            if (hmac.compare_digest(user.encode(), expected_user.encode())
+                    and hmac.compare_digest(pwd.encode(), expected_pwd.encode())):
                 return True
         except: pass
         self.send_response(401)
@@ -297,11 +313,8 @@ class Handler(BaseHTTPRequestHandler):
         fetches and the WebSocket upgrade — protocol-agnostic once bytes flow."""
         parts = urlparse(self.path).path.split("/", 3)
         tid = parts[2] if len(parts) > 2 else ""
+        # Only configured terminals — never proxy to arbitrary loopback ports.
         port = TERM_PORTS.get(tid)
-        if port is None and tid.startswith("t") and tid[1:].isdigit():
-            pt = int(tid[1:])
-            if 8086 <= pt <= 8110:  # dynamically-added terminals
-                port = pt
         if port is None:
             self._json({"error": "unknown terminal"}, 404)
             return
@@ -397,7 +410,12 @@ class Handler(BaseHTTPRequestHandler):
                 q = unquote(q[2:])
                 if not SEARCH_CMD:
                     self._json({"error": "search isn't set up yet"}); return
-                r = subprocess.run(SEARCH_CMD + [q], capture_output=True, text=True, timeout=30)
+                try:
+                    r = subprocess.run(SEARCH_CMD + [q], capture_output=True, text=True, timeout=30)
+                except FileNotFoundError:
+                    self._json({"error": "search isn't wired up right (command not found) — tell whoever set me up"}); return
+                except subprocess.TimeoutExpired:
+                    self._json({"error": "search took too long — try again in a moment"}); return
                 try: self._json(json.loads(r.stdout))
                 except: self._json({"error":(r.stderr or r.stdout or "?").strip()[:200]})
             else: self._json({"error":"no query"})
@@ -454,6 +472,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"output": (r.stdout or r.stderr or "done").strip()[:2000]})
             except subprocess.TimeoutExpired:
                 self._json({"output": "That took too long \u2014 try again in a bit."})
+            except FileNotFoundError:
+                self._json({"output": "That action isn't wired up right (command not found) \u2014 tell whoever set me up."})
         else: self._json({"error":"not found"},404)
 
     def log_message(self, f, *a):

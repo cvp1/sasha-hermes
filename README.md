@@ -1,13 +1,20 @@
 # Sasha
 
-**An accessibility layer for [hermes](https://github.com/NousResearch).** One warm,
+**An accessibility layer for hermes** (the Nous Research agent framework). One warm,
 plain-language web page that puts a hermes agent in front of someone who will never
 open a terminal: a greeting, a few plain-word action chips, and the conversation as
 the hero. All the ops detail lives behind a quiet "under the hood" drawer.
 
 Born on a ranch in the Arizona high desert as the front door to a household AI, for
-a real second user who'd never touched a terminal — then generalized so any hermes
-install can have one.
+a real second user who'd never touched a terminal — now generalized into this
+package.
+
+> **Honest status:** this requires an existing, working `hermes` install on the
+> target user's PATH — the installer checks and stops without one. It has been
+> extracted from (and hardened by) one real deployment; this generalized package
+> has not yet been re-validated on a machine outside that household. Treat it as
+> early. Basic Auth rides plain HTTP on the LAN — fine for a trusted home
+> network, not for anything beyond it.
 
 ## What the person sees
 
@@ -83,6 +90,11 @@ Uninstall: `sudo ./uninstall.sh --user <user>` (keeps config + data).
 
 ## Provenance
 
-Proving ground: the CC ranch fleet (`cvp1`), where every piece of this — the
-loopback+proxy posture, the pump fixes, the tmux/ttyd hardening, the palette —
-survived a real deployment with a real non-technical user before being packaged.
+Proving ground: the CC ranch fleet (`cvp1`). The loopback+proxy posture, the pump
+fixes, the tmux/ttyd hardening, and the palette all survived a real deployment
+with a real non-technical user; this package is that deployment's
+generalization, and hasn't itself re-run for that user yet (the ranch instance
+migrating onto this package is the plan of record).
+
+If the agent ever exits, the pane shows a plain-words holding screen and
+retries — it never falls through to a shell.

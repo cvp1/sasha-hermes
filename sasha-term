@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # Sasha chat pane. Login shell for PATH (~/.local/bin); try the classic REPL
 # flag first, fall back to the `chat` subcommand (older hermes CLIs reject
-# --cli); if the REPL ever exits, drop to a login shell so the pane never dies.
-# This pane is a CHAT surface: no status bar, and the window tracks the most
-# recent client (window-size latest) so mixed-size browsers don't leave a
-# dotted unused region + redraw junk.
+# --cli). This pane is a CHAT surface: no status bar, and the window tracks
+# the most recent client (window-size latest) so mixed-size browsers don't
+# leave a dotted unused region + redraw junk.
+#
+# If the agent exits, show a plain-words holding screen and retry — NEVER
+# fall through to a shell. A raw bash prompt rendered as the chat hero is
+# the worst possible surface for the person this page serves.
 if [ -n "${TMUX:-}" ]; then
   tmux set-option status off 2>/dev/null
   tmux set-option window-size latest 2>/dev/null
 fi
-bash -lc 'hermes --cli || hermes chat'
-stty sane 2>/dev/null || true
-exec bash -l
+while true; do
+  bash -lc 'hermes --cli || hermes chat'
+  stty sane 2>/dev/null || true
+  clear 2>/dev/null || true
+  echo
+  echo "   Sasha is resting for a moment. I'll wake her back up in a few seconds…"
+  echo
+  echo "   (If this message keeps coming back, tell the person who set me up.)"
+  sleep 6
+done

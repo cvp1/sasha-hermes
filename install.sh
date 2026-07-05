@@ -69,8 +69,10 @@ else
   echo "    keeping existing config.json"
 fi
 if [[ ! -f "$CFG_DIR/auth" ]]; then
-  PW=$(head -c9 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c12)
-  printf '%s:%s' "$DISPLAY_NAME" "$PW" | tr '[:upper:]' '[:lower:]' > "$CFG_DIR/auth"
+  # lowercase the USERNAME only — never the password (would halve its entropy)
+  LOGIN=$(printf '%s' "$DISPLAY_NAME" | tr '[:upper:]' '[:lower:]')
+  PW=$(head -c18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c14)
+  printf '%s:%s' "$LOGIN" "$PW" > "$CFG_DIR/auth"
   chown "$USER_NAME:$USER_NAME" "$CFG_DIR/auth"; chmod 0600 "$CFG_DIR/auth"
   NEW_CRED=$(cat "$CFG_DIR/auth")
 else
