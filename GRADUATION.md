@@ -22,21 +22,20 @@ are and how you like things.
    this machine, they exist — done. If not, either run the product setup first
    (recommended: [the walkthrough](https://cvp1.github.io/ai-os/)) or start
    blank — Sasha seeds skeletons and learns as you talk.
-2. **Install hermes** ([docs](https://hermes-agent.nousresearch.com/docs/)):
+2. **Install hermes** ([docs](https://hermes-agent.nousresearch.com/docs/)) —
+   use the official installer; it brings its own Python and puts the command
+   on PATH for all shells:
    ```sh
-   pip install hermes-agent
+   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+   ```
+   Open a **new terminal**, then:
+   ```sh
    hermes setup        # the wizard: pick a provider, paste its key
    ```
-   **Two Mac stumbles, both normal:**
-   - *"externally-managed-environment"* from pip → use `pipx install
-     hermes-agent` instead (`brew install pipx` first if needed).
-   - *"command not found: hermes"* after install → the install worked; your
-     shell just can't see it. Fix:
-     ```sh
-     BIN="$(python3 -m site --user-base)/bin"
-     echo "export PATH=\"$BIN:\$PATH\"" >> ~/.zshrc && source ~/.zshrc
-     ```
-     (pipx users: `pipx ensurepath`, then open a new terminal.)
+   *(Alternate: `pip install hermes-agent` works ONLY on Python 3.11–3.13 —
+   Macs ship 3.9, where pip reports "package not found." If you do use pip
+   and get "command not found" after: `export PATH="$(python3 -m site
+   --user-base)/bin:$PATH"` in your ~/.zshrc.)*
 3. **Run this layer:**
    ```sh
    git clone https://github.com/cvp1/sasha-hermes && cd sasha-hermes
