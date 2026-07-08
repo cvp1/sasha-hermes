@@ -30,7 +30,7 @@ from email.header import decode_header
 HOME = os.path.expanduser("~")
 CC = os.path.join(HOME, "Github", "CC")
 GAPI = os.path.join(HOME, ".hermes/skills/productivity/google-workspace/scripts/google_api.py")
-STATE_FILE = os.path.join(CC, "_lib", "inbox_triage_state.json")
+STATE_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "sasha", "inbox_triage_state.json")
 
 OLLAMA_URL = "http://192.168.86.21:11434/api/chat"
 OLLAMA_MODEL = "gemma4:e4b"

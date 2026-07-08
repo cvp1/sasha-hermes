@@ -25,7 +25,7 @@ CC = os.path.join(HOME, "Github", "CC")
 VAULT = os.path.join(HOME, "notes")
 SIGNALS_DIR = os.path.join(VAULT, "06 Logs", "Signals")
 INBOX_DIR = os.path.join(VAULT, "_inbox")
-INDEX_DIR = os.path.join(CC, "_lib", "knowledge_index_data")
+INDEX_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge")
 EMBED_URL = "http://192.168.86.21:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
 

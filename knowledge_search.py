@@ -10,7 +10,7 @@ import json, os, sys, urllib.request, argparse
 import numpy as np
 
 CC = os.path.join(os.path.expanduser("~"), "Github", "CC")
-INDEX_DIR = os.path.join(CC, "_lib", "knowledge_index_data")
+INDEX_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge")
 EMBED_URL = "http://192.168.86.21:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
 

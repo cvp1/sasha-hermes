@@ -14,7 +14,7 @@ from pathlib import Path
 
 HOME = os.path.expanduser("~")
 CC = os.path.join(HOME, "Github", "CC")
-INDEX_DIR = os.path.join(CC, "_lib", "knowledge_index_data")
+INDEX_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge")
 os.makedirs(INDEX_DIR, exist_ok=True)
 
 EMBED_URL = "http://192.168.86.21:11434/api/embeddings"

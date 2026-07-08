@@ -45,7 +45,7 @@ def ollama():
 
 def events_db():
     try:
-        db = os.path.join(CC, "_lib", "event_bus_data", "events.db")
+        db = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "event-bus", "events.db")
         if os.path.exists(db):
             conn = sqlite3.connect(db)
             t, p = conn.execute("SELECT COUNT(*),COALESCE(SUM(processed),0) FROM events").fetchone()
@@ -75,8 +75,8 @@ def cost():
 
 
 def knowledge():
-    ki = os.path.join(CC, "_lib", "knowledge_index_data", "index.npz")
-    mi = os.path.join(CC, "_lib", "knowledge_index_data", "meta.jsonl")
+    ki = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge", "index.npz")
+    mi = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge", "meta.jsonl")
     if os.path.exists(ki):
         ah = (time.time() - os.path.getmtime(ki)) / 3600
         n = sum(1 for _ in open(mi)) if os.path.exists(mi) else 0

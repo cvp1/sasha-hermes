@@ -31,8 +31,8 @@ HERMES = os.path.join(HOME, ".hermes")
 AGENTS_DIR = os.path.join(HOME, "notes", "06 Logs", "Agents")
 META_DIR = os.path.join(HOME, "notes", "00 Meta")
 STATUS_NOTE = os.path.join(META_DIR, "System Status.md")
-EVENT_BUS_DB = os.path.join(CC, "_lib", "event_bus_data", "events.db")
-KNOWLEDGE_INDEX = os.path.join(CC, "_lib", "knowledge_index_data", "index.npz")
+EVENT_BUS_DB = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "event-bus", "events.db")
+KNOWLEDGE_INDEX = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge", "index.npz")
 OLLAMA_URL = "http://192.168.86.21:11434"
 
 # ---------------------------------------------------------------------------
