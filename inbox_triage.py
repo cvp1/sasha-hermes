@@ -26,6 +26,7 @@ import ssl
 import sys
 import urllib.request
 from email.header import decode_header
+from email.utils import parseaddr
 
 HOME = os.path.expanduser("~")
 CC = os.path.join(HOME, "Github", "CC")
@@ -35,6 +36,14 @@ STATE_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "sas
 OLLAMA_URL = "http://192.168.86.21:11434/api/chat"
 OLLAMA_MODEL = "gemma4:e4b"
 DEFAULT_ALERT = "craig.vandeputte@proton.me"
+
+# Mail this pipeline sends to itself — the Work Brief (Gmail->Gmail,
+# cognizant_brief.py) and this script's own "Inbox Triage" alert (->Proton).
+# Both land back in an inbox this script polls; never classify or alert on
+# them, or a stray URGENT hit re-alerts on its own alert forever (found
+# 2026-07-21: 6 straight 30-min cycles alerting on nothing but the prior
+# alert's subject literally matching the `urgent` pattern).
+SELF_ADDRESSES = {"craig.vandeputte@gmail.com", "craig.vandeputte@proton.me"}
 
 # Proton Mail Bridge IMAP
 PROTON_HOST = "127.0.0.1"
@@ -201,10 +210,16 @@ def _fetch_proton_emails(max_results=15):
 def _classify_local(email_text):
     """Classify an email using local gemma4:e4b on .21. Returns (category, urgency)."""
     prompt = (
-        "Classify this email. Reply with exactly one word:\n"
-        "URGENT (needs same-day reply, deadline, client issue)\n"
-        "FYI (good to know, no action needed)\n"
-        "NOISE (newsletter, spam, automated, low-priority)\n\n"
+        "Classify this email into exactly one category. Reply with exactly one word.\n\n"
+        "URGENT — a human is waiting on Craig for a same-day reply, a real deadline "
+        "lands today or tomorrow, or it is a client/work escalation. Do NOT mark it "
+        "urgent just because it mentions money, a due date, or the word "
+        "statement/payment — routine bills and account statements are never urgent "
+        "unless they say overdue, suspended, fraud, or dispute.\n"
+        "FYI — worth knowing, no reply needed today (routine account/billing "
+        "notices, calendar-adjacent updates, personal correspondence with no "
+        "deadline).\n"
+        "NOISE — newsletter, marketing, automated notification, low-priority.\n\n"
         "Email:\n%s\n\nCategory:" % email_text[:1000]
     )
     body = json.dumps({
@@ -225,6 +240,13 @@ def _classify_local(email_text):
         if cat in out:
             return cat
     return "NOISE"
+
+
+def _is_self_sent(email):
+    """True if `from` is one of Craig's own monitored addresses. These are
+    always either an already-read digest or this tool's own prior alert —
+    never new mail needing triage."""
+    return parseaddr(email.get("from", ""))[1].lower() in SELF_ADDRESSES
 
 
 def _is_urgent_by_pattern(email):
@@ -299,6 +321,13 @@ def main():
     print("  Gmail: %d new · %d total   Proton: %d unseen"
           % (gmail_new, len(gmail_emails), len(proton_emails)),
           file=sys.stderr)
+
+    self_sent = [e for e in new_emails if _is_self_sent(e)]
+    new_emails = [e for e in new_emails if not _is_self_sent(e)]
+    if self_sent:
+        print("  Skipped %d self-sent item(s) (digest/own alert, never triage-worthy): %s"
+              % (len(self_sent), ", ".join(e["subject"][:40] for e in self_sent)),
+              file=sys.stderr)
 
     if not new_emails:
         print("  Nothing new.", file=sys.stderr)
