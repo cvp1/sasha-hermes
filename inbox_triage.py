@@ -52,7 +52,11 @@ PROTON_USER = "craig.vandeputte@proton.me"
 PROTON_PW_FILE = "~/.key/proton_cvp"
 
 URGENT_PATTERNS = [
-    r"goldman.?sachs", r"gs\b", r"cognizant", r"urgent", r"action required",
+    # \bgs\b (not gs\b): must be a standalone "GS" (the Goldman Sachs
+    # shorthand), not a substring match on any word ending in "gs" —
+    # earnings/savings/bookings/meetings/listings/flags all matched
+    # gs\b and false-positived (found 2026-07-22, PayPal "earnings" email).
+    r"goldman.?sachs", r"\bgs\b", r"cognizant", r"urgent", r"action required",
     r"deadline", r"asap", r"today", r"meeting.*change", r"schedule.*conflict",
     r"client.*call", r"review.*by",
 ]
