@@ -113,15 +113,22 @@ def check_mcp():
 
 
 def check_cron():
-    """All cron jobs running?"""
+    """All cron jobs running?
+
+    Counts systemd user timers, not `hermes cron list`. The estate moved to
+    systemd on 2026-07-26 and every hermes job was paused in the same cutover,
+    so the old check reported "0 active jobs" — YELLOW, whole status DEGRADED —
+    while all 81 timers were running fine. It measured a scheduler that had been
+    retired hours earlier. See cron/CUTOVER.md and cron/AUDIT-2026-07-26.md.
+    """
     try:
         r = subprocess.run(
-            ["hermes", "cron", "list"],
+            ["systemctl", "--user", "list-timers", "cc-*", "--all", "--no-pager",
+             "--no-legend"],
             capture_output=True, text=True, timeout=10)
-        # Count active jobs (lines like "  <id> [active]")
-        active = sum(1 for l in r.stdout.split("\n") if "[active]" in l and l[:1] in (" ", "\t"))
+        active = sum(1 for l in r.stdout.splitlines() if ".timer" in l)
         return ("Cron", "GREEN" if active >= 3 else "YELLOW",
-                "%d active jobs" % active)
+                "%d active timers" % active)
     except Exception as e:
         return ("Cron", "YELLOW", str(e)[:60])
 
@@ -377,6 +384,16 @@ def main():
     if args.json:
         print(render_json(results, overall))
     else:
+        # Story 008 (cron/MANIFEST.md): when this runs as a scheduled job,
+        # noticing that something is degraded is the job WORKING. Lead with the
+        # FINDINGS: line log_run stores as the run's summary, and exit 0 below —
+        # non-zero is reserved for this script actually breaking. Before the
+        # scheduled path was instrumented at all (2026-07-26) a DEGRADED exit 1
+        # was indistinguishable from a crash, and invisible either way.
+        if args.write_note and overall != "GREEN":
+            bad = [f"{name} {status}" for name, status, _ in results
+                   if status != "GREEN"]
+            print("FINDINGS: system status %s — %s" % (overall, ", ".join(bad)))
         print(render_terminal(results, overall))
 
     if args.write_note:
@@ -386,6 +403,10 @@ def main():
             fh.write(note)
         print("  Written to %s" % STATUS_NOTE, file=sys.stderr)
 
+    # Interactive runs keep the old exit-code contract (0/1/2 by severity);
+    # the scheduled --write-note path uses found-work semantics instead.
+    if args.write_note:
+        return 0
     return 0 if overall == "GREEN" else (1 if overall == "YELLOW" else 2)
 
 
