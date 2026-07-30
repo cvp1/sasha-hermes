@@ -30,6 +30,9 @@ from email.utils import parseaddr
 
 HOME = os.path.expanduser("~")
 CC = os.path.join(HOME, "Github", "CC")
+
+sys.path.insert(0, CC)
+from _lib.otp_guard import redact_field  # noqa: E402
 GAPI = os.path.join(HOME, ".hermes/skills/productivity/google-workspace/scripts/google_api.py")
 STATE_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "sasha", "inbox_triage_state.json")
 
@@ -63,6 +66,21 @@ URGENT_PATTERNS = [
 TOP_PEOPLE = [
     "sheridan", "craig vandeputte",
 ]
+
+
+def _guard_otp(subject, snippet):
+    """Blank one-time codes in a fetched message before anything else sees it.
+
+    Applied at BOTH fetchers, at the point the record is built, because everything
+    downstream consumes these two fields — the local classifier prompt, the alert
+    body, and the JSON output. Guarding the alert alone would leave the code in the
+    prompt sent to the classifier and in the JSON on disk.
+
+    Each field is the other's context: the wording that identifies an auth code
+    usually sits in the subject while the digits sit in the body.
+    """
+    return (redact_field(subject, context=snippet),
+            redact_field(snippet, context=subject))
 
 
 def _now_iso():
@@ -111,6 +129,7 @@ def _fetch_emails(since_iso, max_results=15):
         fr = hdrs.get("From", "?")
         subj = hdrs.get("Subject", "(no subject)")
         snippet = (meta.get("snippet") or "")[:200]
+        subj, snippet = _guard_otp(subj, snippet)
         date_str = hdrs.get("Date", "")
         msgs.append({
             "id": "gmail_%s" % msg_id,
@@ -194,11 +213,12 @@ def _fetch_proton_emails(max_results=15):
                         msg.get_content_charset() or "utf-8", "replace"
                     )[:200].replace("\n", " ")
 
+            g_subj, g_snippet = _guard_otp(str(subj), snippet)
             msgs.append({
                 "id": "proton_%s" % uid.decode(),
                 "from": str(fr),
-                "subject": str(subj),
-                "snippet": snippet,
+                "subject": g_subj,
+                "snippet": g_snippet,
                 "date": msg.get("Date", ""),
                 "source": "proton",
             })
