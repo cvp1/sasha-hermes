@@ -14,9 +14,11 @@ Usage:
     python3 knowledge_gardener.py [--dry-run] [--stale-days 45]
 """
 import datetime as dt
+import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 
@@ -31,6 +33,7 @@ EMBED_MODEL = "nomic-embed-text"
 
 STALE_DAYS = 30
 MAX_PROPOSALS = 5  # per run — don't overwhelm the inbox
+PROPOSAL_COOLDOWN_DAYS = 30  # don't re-propose the same canonical note within this window
 
 
 def _embed(text):
@@ -51,6 +54,28 @@ def _cosine_sim(a, b):
     return dot / (na * nb + 1e-8)
 
 
+def _last_touched(path):
+    """Last meaningfully-touched epoch for a vault note: git commit date over
+    mtime. The vault is git-backed and Syncthing-synced; both checkout and
+    sync reset mtime (CLAUDE.md convention), so raw os.path.getmtime reads as
+    fresh right after a sync even when the content hasn't changed in months —
+    this previously made the gardener silently skip genuinely stale notes and
+    catch freshly-synced ones instead."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", VAULT, "log", "-1", "--format=%ct", "--", path],
+            capture_output=True, text=True, timeout=5)
+        s = out.stdout.strip()
+        if s:
+            return float(s)
+    except Exception:
+        pass
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
 def find_stale_notes(stale_days=STALE_DAYS):
     """Yield (path, rel_path, age_days, snippet) for notes older than stale_days."""
     now = dt.datetime.now().timestamp()
@@ -62,15 +87,15 @@ def find_stale_notes(stale_days=STALE_DAYS):
             if not f.endswith(".md"):
                 continue
             path = os.path.join(root, f)
-            mtime = os.path.getmtime(path)
-            if mtime > cutoff:
+            touched = _last_touched(path)
+            if touched is None or touched > cutoff:
                 continue
             rel = os.path.relpath(path, VAULT)
             # Skip generated artifacts (signal scans are in 06 Logs/Signals — they're
             # generated daily and should not be "gardened")
             if rel.startswith("06 Logs/"):
                 continue
-            age_days = int((now - mtime) / 86400)
+            age_days = int((now - touched) / 86400)
             try:
                 text = open(path, encoding="utf-8", errors="replace").read()
                 # Strip YAML frontmatter
@@ -119,13 +144,57 @@ def find_related_signals(note_text, signals, threshold=0.35):
     return related[:3]
 
 
+def _proposal_date(path):
+    """Parse the `date:` frontmatter propose_update() writes. Falls back to
+    mtime — this is our own generated file, not a synced vault note, so mtime
+    is trustworthy here (only the source vault notes have the sync problem)."""
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read(400)
+        m = re.search(r"^date:\s*(\S+)", text, re.M)
+        if m:
+            return dt.datetime.fromisoformat(m.group(1)).timestamp()
+    except Exception:
+        pass
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _already_proposed(slug, cooldown_days=PROPOSAL_COOLDOWN_DAYS):
+    """True if a gardener proposal for this canonical note already exists —
+    pending in _inbox/ (not yet ingested) or archived in _inbox/processed/
+    (ingested, possibly hash-suffixed by ingest.py on a name collision) —
+    within cooldown_days.
+
+    Checking only INBOX_DIR (as this used to) missed the processed/ case:
+    /ingest empties the pending slot the same day, so a canonical note that
+    stays stale (the common case — see EVAL.md "the curated human strata are
+    frozen") got re-proposed every single run for as long as it kept matching
+    a recent signal. Measured 2026-08-06: 62 files in _inbox/processed/ for
+    23 unique canonical notes, up to 6 near-duplicate copies of the same
+    proposal, unbounded (Principle 8)."""
+    now = dt.datetime.now(dt.timezone.utc).timestamp()
+    patterns = [
+        os.path.join(INBOX_DIR, "gardener-%s.md" % slug),
+        os.path.join(INBOX_DIR, "processed", "gardener-%s.md" % slug),
+        os.path.join(INBOX_DIR, "processed", "gardener-%s-*.md" % slug),
+    ]
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            d = _proposal_date(path)
+            if d is not None and (now - d) < cooldown_days * 86400:
+                return True
+    return False
+
+
 def propose_update(note_rel, note_snippet, related_signals, age_days=30):
     """Write an update proposal into the /ingest inbox."""
     title = "gardener: %s" % note_rel.replace(".md", "").replace("/", " - ")
     slug = re.sub(r"[^a-z0-9]+", "-", note_rel.lower().replace(".md", "").replace("/", "-"))[:60]
     path = os.path.join(INBOX_DIR, "gardener-%s.md" % slug)
-    if os.path.exists(path):
-        return None  # already proposed
+    if _already_proposed(slug):
+        return None  # already proposed within the cooldown window
 
     lines = [
         "---",
