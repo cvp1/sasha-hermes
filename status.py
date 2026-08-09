@@ -401,7 +401,11 @@ def main():
         note = render_note(results, overall)
         with open(STATUS_NOTE, "w", encoding="utf-8") as fh:
             fh.write(note)
-        print("  Written to %s" % STATUS_NOTE, file=sys.stderr)
+        # stdout, not stderr: this is a success confirmation, and freshness's
+        # soft_failure() reads stderr-on-a-zero-exit as "the job is swallowing
+        # its own errors" — which flagged this job SOFTFAIL on 12/12 runs for
+        # saying it did exactly what it was asked to do (found 2026-08-09).
+        print("  Written to %s" % STATUS_NOTE)
 
     # Interactive runs keep the old exit-code contract (0/1/2 by severity);
     # the scheduled --write-note path uses found-work semantics instead.
