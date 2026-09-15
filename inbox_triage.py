@@ -102,11 +102,8 @@ def _save_state(state):
 
 def _fetch_emails(since_iso, max_results=15):
     """Fetch recent inbox messages via Google API. Returns list of dicts."""
-    from googleapiclient.discovery import build
-    from google.oauth2.credentials import Credentials
-    tok = os.path.join(HOME, ".hermes", "google_token.json")
-    creds = Credentials.from_authorized_user_file(tok)
-    service = build("gmail", "v1", credentials=creds)
+    from _lib import google_auth
+    service = google_auth.service("gmail", "v1")
 
     query = "in:inbox"
     if since_iso:
