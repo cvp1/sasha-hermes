@@ -101,40 +101,47 @@ def _save_state(state):
 
 
 def _fetch_emails(since_iso, max_results=15):
-    """Fetch recent inbox messages via Google API. Returns list of dicts."""
-    from _lib import google_auth
-    service = google_auth.service("gmail", "v1")
+    """Recent inbox messages, through the google-connector's one path.
+
+    Was a direct ``google_auth.service("gmail", "v1")`` call, which died whole
+    when the OAuth grant was revoked on 2026-09-16. The connector resolves
+    ``imap -> oauth`` behind one resolver, so this survives an OAuth death.
+
+    The OTP guard that used to run here now runs in the DISPATCHER's sanitize
+    step (``google-connector/sanitize.py``). ``_guard_otp`` stays for the Proton
+    fetcher below, which does not come through a connector yet — one guard per
+    path, and neither path is unguarded.
+
+    Returns the same dict shape as before, so nothing downstream changes.
+    """
+    from google_connector import Caller, dispatch
 
     query = "in:inbox"
     if since_iso:
-        # Use date-based query for simplicity
         d = dt.datetime.fromisoformat(since_iso)
         query += " after:%s" % d.strftime("%Y/%m/%d")
 
-    results = service.users().messages().list(
-        userId="me", maxResults=max_results, q=query,
-    ).execute()
+    env = dispatch("google_mail_search",
+                   {"query": query, "count": min(max_results, 40)},
+                   Caller("inbox_triage"))
+    if env.status == "unavailable":
+        # Loud and specific. Returning [] here would read as "no new mail",
+        # which is the failure mode the envelope exists to prevent.
+        raise RuntimeError("gmail fetch unavailable: %s — %s"
+                           % ((env.error or {}).get("code"),
+                              (env.error or {}).get("recovery") or "no recovery given"))
+    for w in env.warnings:
+        print("inbox_triage: %s" % w, file=sys.stderr)
 
     msgs = []
-    for m in results.get("messages", []):
-        meta = service.users().messages().get(
-            userId="me", id=m["id"], format="metadata",
-            metadataHeaders=["From", "Subject", "Date", "X-Priority"]
-        ).execute()
-        hdrs = {h["name"]: h["value"] for h in meta.get("payload", {}).get("headers", [])}
-        msg_id = m["id"]
-        fr = hdrs.get("From", "?")
-        subj = hdrs.get("Subject", "(no subject)")
-        snippet = (meta.get("snippet") or "")[:200]
-        subj, snippet = _guard_otp(subj, snippet)
-        date_str = hdrs.get("Date", "")
+    for row in env.data or []:
         msgs.append({
-            "id": "gmail_%s" % msg_id,
-            "from": fr,
-            "subject": subj,
-            "snippet": snippet,
-            "date": date_str,
-            "internal_date": meta.get("internalDate", "0"),
+            "id": "gmail_%s" % row["id"],
+            "from": row.get("from", "?"),
+            "subject": row.get("subject") or "(no subject)",
+            "snippet": "",   # the connector's list tools return headers only
+            "date": row.get("date", ""),
+            "internal_date": "0",
             "source": "gmail",
         })
     return msgs
@@ -330,8 +337,16 @@ def main():
     print("Inbox triage — checking since %s" % (since or "start of day"),
           file=sys.stderr)
 
-    # Fetch from both Gmail and Proton (Gmail uses date-based since, Proton uses UNSEEN)
-    gmail_emails = _fetch_emails(since)
+    # Fetch from both Gmail and Proton (Gmail uses date-based since, Proton
+    # uses UNSEEN). One account being down must not take the other with it —
+    # that shared-fate coupling is exactly what the connector cutover removes,
+    # so it would be perverse to reintroduce it here. A Gmail outage is LOUD on
+    # stderr and the Proton half still runs.
+    try:
+        gmail_emails = _fetch_emails(since)
+    except Exception as e:  # noqa: BLE001 — degrade one account, not the run
+        print("  Gmail: UNAVAILABLE — %s" % e, file=sys.stderr)
+        gmail_emails = []
     proton_emails = _fetch_proton_emails()
 
     all_emails = gmail_emails + proton_emails
