@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
 """Inbox Triage Agent — watch Gmail + Proton for urgent emails between daily briefs.
 
-Runs every 30min: checks Gmail (via Google API) and Proton (via Bridge IMAP
-port 1144) for new email since last check, classifies each by urgency, and
-alerts if anything needs same-day attention.
+Runs every 30min: checks Gmail and Proton for new email since last check,
+classifies each by urgency, and alerts if anything needs same-day attention.
 
 Design:
-  - Gmail via Google API (already OAuth-authenticated) — no Claude dependency
-  - Proton via local Bridge IMAP (127.0.0.1:1144, self-signed cert)
+  - Gmail through `google_connector` (imap -> oauth behind one resolver)
+  - Proton through `proton_connector` (the local Bridge, one transport home)
   - Classifies with local gemma4:e4b on .21 — sensitive data stays local
   - Tracks state in a JSON file (last_check timestamp, seen IDs)
   - Alerts via Proton email only when something actionable appears
-  - Best-effort: failures degrade silently (the morning brief is the source of truth)
+  - Per-account degradation: a dead mailbox is LOUD on stderr and does not
+    take the other account with it; neither ever reports empty for unreadable
 
 Usage:
     python3 inbox_triage.py [--dry-run] [--alert-email craig.vandeputte@proton.me]
 """
 import datetime as dt
-import email as eml
-import imaplib
 import json
 import os
 import re
-import ssl
 import sys
 import urllib.request
-from email.header import decode_header
 from email.utils import parseaddr
 
 HOME = os.path.expanduser("~")
@@ -48,11 +44,10 @@ DEFAULT_ALERT = "craig.vandeputte@proton.me"
 # alert's subject literally matching the `urgent` pattern).
 SELF_ADDRESSES = {"craig.vandeputte@gmail.com", "craig.vandeputte@proton.me"}
 
-# Proton Mail Bridge IMAP
-PROTON_HOST = "127.0.0.1"
-PROTON_PORT = 1144
-PROTON_USER = "craig.vandeputte@proton.me"
-PROTON_PW_FILE = "~/.key/proton_cvp"
+# Proton Mail is read through `proton_connector`, which owns the Bridge
+# transport, the vault read and the OTP guard. There are no IMAP constants
+# here any more — a second copy of them is a second thing to get wrong, and
+# port 1143 is Sheridan's account.
 
 URGENT_PATTERNS = [
     # \bgs\b (not gs\b): must be a standalone "GS" (the Goldman Sachs
@@ -71,10 +66,11 @@ TOP_PEOPLE = [
 def _guard_otp(subject, snippet):
     """Blank one-time codes in a fetched message before anything else sees it.
 
-    Applied at BOTH fetchers, at the point the record is built, because everything
-    downstream consumes these two fields — the local classifier prompt, the alert
-    body, and the JSON output. Guarding the alert alone would leave the code in the
-    prompt sent to the classifier and in the JSON on disk.
+    Both fetchers now come through a connector, whose dispatcher runs this same
+    guard in its sanitize step — one guard per path, and neither path is
+    unguarded. This stays as the belt to that braces: it is the guard any future
+    fetcher added to this file inherits, and the cost of calling it twice is
+    nothing next to the cost of a code reaching the classifier prompt.
 
     Each field is the other's context: the wording that identifies an auth code
     usually sits in the subject while the digits sit in the body.
@@ -108,9 +104,9 @@ def _fetch_emails(since_iso, max_results=15):
     ``imap -> oauth`` behind one resolver, so this survives an OAuth death.
 
     The OTP guard that used to run here now runs in the DISPATCHER's sanitize
-    step (``google-connector/sanitize.py``). ``_guard_otp`` stays for the Proton
-    fetcher below, which does not come through a connector yet — one guard per
-    path, and neither path is unguarded.
+    step (``google-connector/sanitize.py``), and the Proton fetcher below now
+    comes through ``proton_connector`` for the same reason — one guard per path,
+    and neither path is unguarded.
 
     Returns the same dict shape as before, so nothing downstream changes.
     """
@@ -135,6 +131,8 @@ def _fetch_emails(since_iso, max_results=15):
 
     msgs = []
     for row in env.data or []:
+        if not _at_or_after(row.get("date", ""), since_iso):
+            continue
         msgs.append({
             "id": "gmail_%s" % row["id"],
             "from": row.get("from", "?"),
@@ -147,92 +145,71 @@ def _fetch_emails(since_iso, max_results=15):
     return msgs
 
 
-def _fetch_proton_emails(max_results=15):
-    """Fetch unseen inbox messages via Proton Mail Bridge IMAP.
+def _at_or_after(date_header, since_iso):
+    """Is this message's own Date at or after ``since_iso``?
 
-    Returns same dict format as _fetch_emails() with a ``source``: ``"proton"``
-    key so we can distinguish sources later. Best-effort — failures return [].
+    Gmail's `after:` (and IMAP's `SINCE`) are CALENDAR-DAY granular, so a job
+    that runs every 30 minutes and asks for "since 14:00" gets everything since
+    midnight and re-triages the whole day (Grok G15, 2026-09-16). The server
+    query stays as the cheap coarse filter; the exact bound is applied here,
+    against the message's own parsed Date.
+
+    An unparseable Date is KEPT: dropping a message because its header is
+    malformed would be a silent loss, and the coarse window already bounds it.
     """
-    pw_file = os.path.expanduser(PROTON_PW_FILE)
-    if not os.path.isfile(pw_file):
-        print("  Proton: no password file at %s" % pw_file, file=sys.stderr)
-        return []
-    pw = open(pw_file).read().strip()
-
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
+    if not since_iso:
+        return True
     try:
-        M = imaplib.IMAP4(PROTON_HOST, PROTON_PORT, timeout=10)
-        M.starttls(ctx)
-        M.login(PROTON_USER, pw)
-    except Exception as e:
-        print("  Proton: connection/login failed — %s" % e, file=sys.stderr)
-        return []
-
+        since = dt.datetime.fromisoformat(since_iso)
+    except ValueError:
+        return True
     try:
-        typ, data = M.select("INBOX")
-        if typ != "OK":
-            print("  Proton: select INBOX failed — %s" % data, file=sys.stderr)
-            return []
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(date_header)
+    except (TypeError, ValueError):
+        return True
+    if when is None:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=dt.timezone.utc)
+    return when >= since
 
-        typ, data = M.search(None, "UNSEEN")
-        unseen_ids = data[0].split() if data[0] else []
 
-        msgs = []
-        for uid in unseen_ids[:max_results]:
-            typ, fetch_data = M.fetch(uid, "(BODY.PEEK[] INTERNALDATE)")
-            if typ != "OK" or not fetch_data or fetch_data[0] is None:
-                continue
+def _fetch_proton_emails(max_results=15):
+    """Recent Proton INBOX messages, through the proton-connector's one path.
 
-            raw = fetch_data[0]
-            raw_bytes = raw[1] if isinstance(raw, tuple) and len(raw) > 1 else None
-            if raw_bytes is None:
-                continue
+    Was raw ``imaplib`` in this file — its own socket, its own
+    ``open(~/.key/proton_cvp)``, its own OTP guard — and every failure path
+    ``return []``. An empty Proton inbox that is not empty is the exact failure
+    the connector's envelope exists to prevent, and it read the vault outside
+    ``_lib.secrets`` while doing it (Grok G18, 2026-09-16).
 
-            msg = eml.message_from_bytes(raw_bytes)
-            fr = str(decode_header(msg.get("From", "?"))[0][0], "utf-8", "replace") \
-                if isinstance(decode_header(msg.get("From", "?"))[0][0], bytes) \
-                else decode_header(msg.get("From", "?"))[0][0]
-            subj = str(decode_header(msg.get("Subject", "(no subject)"))[0][0], "utf-8", "replace") \
-                if isinstance(decode_header(msg.get("Subject", "(no subject)"))[0][0], bytes) \
-                else decode_header(msg.get("Subject", "(no subject)"))[0][0]
+    Raises on ``unavailable``, exactly as the Gmail fetcher does; the caller
+    isolates the two accounts so one dead mailbox does not take the other.
+    """
+    from proton_connector import Caller, dispatch
 
-            # Get plain-text snippet
-            snippet = ""
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == "text/plain":
-                        payload = part.get_payload(decode=True)
-                        if payload:
-                            snippet = payload.decode(
-                                part.get_content_charset() or "utf-8", "replace"
-                            )[:200].replace("\n", " ")
-                        break
-            else:
-                payload = msg.get_payload(decode=True)
-                if payload:
-                    snippet = payload.decode(
-                        msg.get_content_charset() or "utf-8", "replace"
-                    )[:200].replace("\n", " ")
-
-            g_subj, g_snippet = _guard_otp(str(subj), snippet)
-            msgs.append({
-                "id": "proton_%s" % uid.decode(),
-                "from": str(fr),
-                "subject": g_subj,
-                "snippet": g_snippet,
-                "date": msg.get("Date", ""),
-                "source": "proton",
-            })
-
-        return msgs
-    finally:
-        try:
-            M.logout()
-        except Exception:
-            pass
+    env = dispatch("proton_mail_recent", {"count": min(max_results, 40)},
+                   Caller("inbox_triage"))
+    if env.status == "unavailable":
+        raise RuntimeError("proton fetch unavailable: %s — %s"
+                           % ((env.error or {}).get("code"),
+                              (env.error or {}).get("recovery") or "no recovery given"))
+    for w in env.warnings:
+        print("inbox_triage: %s" % w, file=sys.stderr)
+    msgs = []
+    for row in env.data or []:
+        msgs.append({
+            "id": "proton_%s" % row["id"],
+            "from": row.get("from", "?"),
+            "subject": row.get("subject") or "(no subject)",
+            "snippet": "",   # the connector's list tools return headers only
+            "date": row.get("date", ""),
+            "source": "proton",
+        })
+    return msgs
 
 
 def _classify_local(email_text):
@@ -347,15 +324,19 @@ def main():
     except Exception as e:  # noqa: BLE001 — degrade one account, not the run
         print("  Gmail: UNAVAILABLE — %s" % e, file=sys.stderr)
         gmail_emails = []
-    proton_emails = _fetch_proton_emails()
+    try:
+        proton_emails = _fetch_proton_emails()
+    except Exception as e:  # noqa: BLE001 — degrade one account, not the run
+        print("  Proton: UNAVAILABLE — %s" % e, file=sys.stderr)
+        proton_emails = []
 
     all_emails = gmail_emails + proton_emails
     new_emails = [e for e in all_emails if e["id"] not in seen]
 
     gmail_new = sum(1 for e in new_emails if e["source"] == "gmail")
     proton_new = sum(1 for e in new_emails if e["source"] == "proton")
-    print("  Gmail: %d new · %d total   Proton: %d unseen"
-          % (gmail_new, len(gmail_emails), len(proton_emails)),
+    print("  Gmail: %d new · %d total   Proton: %d new · %d total"
+          % (gmail_new, len(gmail_emails), proton_new, len(proton_emails)),
           file=sys.stderr)
 
     self_sent = [e for e in new_emails if _is_self_sent(e)]
