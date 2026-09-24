@@ -239,12 +239,17 @@ def _classify_local(email_text):
         with urllib.request.urlopen(req, timeout=30) as r:
             resp = json.loads(r.read())
         out = resp.get("message", {}).get("content", "").strip().upper()
-    except Exception:
-        out = ""
+    except Exception as e:
+        print("inbox_triage: classifier call failed (%s) — defaulting to FYI" % e,
+              file=sys.stderr)
+        return "FYI"
     for cat in ("URGENT", "FYI", "NOISE"):
         if cat in out:
             return cat
-    return "NOISE"
+    # Degrade toward safety: an unparseable verdict must never bury mail as NOISE.
+    print("inbox_triage: unparseable verdict %r — defaulting to FYI" % out[:40],
+          file=sys.stderr)
+    return "FYI"
 
 
 def _is_self_sent(email):
