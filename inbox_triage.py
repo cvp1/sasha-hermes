@@ -29,6 +29,7 @@ CC = os.path.join(HOME, "Github", "CC")
 
 sys.path.insert(0, CC)
 from _lib.otp_guard import redact_field  # noqa: E402
+from _lib import control_tokens  # noqa: E402
 GAPI = os.path.join(HOME, ".hermes/skills/productivity/google-workspace/scripts/google_api.py")
 STATE_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "sasha", "inbox_triage_state.json")
 
@@ -227,15 +228,20 @@ def _classify_local(email_text):
         "NOISE — newsletter, marketing, automated notification, low-priority.\n\n"
         "Email:\n%s\n\nCategory:" % email_text[:1000]
     )
-    body = json.dumps({
-        "model": OLLAMA_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False, "think": False,
-        "options": {"num_predict": 10, "temperature": 0},
-    }).encode()
-    req = urllib.request.Request(OLLAMA_URL, data=body,
-                                 headers={"Content-Type": "application/json"})
     try:
+        # An email body must not forge turns (audits/2026-09-28-ai-pulse P1).
+        # A guard failure lands in the except below -> FYI, never unguarded.
+        messages = control_tokens.neutralize_messages(
+            [{"role": "user", "content": prompt}],
+            OLLAMA_URL.rsplit("/api/", 1)[0], OLLAMA_MODEL)
+        body = json.dumps({
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False, "think": False,
+            "options": {"num_predict": 10, "temperature": 0},
+        }).encode()
+        req = urllib.request.Request(OLLAMA_URL, data=body,
+                                     headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             resp = json.loads(r.read())
         out = resp.get("message", {}).get("content", "").strip().upper()
