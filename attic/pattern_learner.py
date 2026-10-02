@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Pattern Learner — analyzes event bus history for trends, baselines, and anomalies.
-
-Runs daily. Subscribes to all events since last run, computes:
-  - Inbox volume trends (daily counts, day-of-week patterns, week-over-week)
-  - Urgency distribution (URGENT/FYI/NOISE ratios over time)
-  - Sender frequency (who emails most, who's always urgent)
-  - Anomaly detection (sudden spikes or drops vs rolling baseline)
-  - Quiet-hour detection (when email volume drops below threshold)
-
-Output: a structured insight report. Significant findings publish a
-`pattern_insight` event for the agent_runner to alert on.
-
-Design:
-  - Stateless: reads all events from the bus, computes, publishes insights
-  - Idempotent: running twice produces the same insights (events don't change)
-  - Best-effort: failures degrade to a note, never break
-"""
+"""Analyze event-bus history for volume trends, hourly patterns and anomalies; print a markdown report."""
 import json
 import os
 import sys
@@ -27,19 +11,17 @@ sys.path.insert(0, CC)
 from _lib import event_bus, mail
 
 
-MIN_DAYS_DATA = 3       # need at least this many days to establish baseline
-ANOMALY_ZSCORE = 2.0    # events outside this many stddevs from mean = anomaly
+MIN_DAYS_DATA = 3       # minimum days for a baseline
+ANOMALY_ZSCORE = 2.0    # |z| above this is an anomaly
 INSIGHT_TYPES = ("volume_trend", "urgency_shift", "sender_pattern",
                  "quiet_hours", "anomaly")
 
 
 def _day(dt_str):
-    """Extract date from ISO timestamp."""
     return dt_str[:10] if dt_str else ""
 
 
 def _hour(dt_str):
-    """Extract hour from ISO timestamp."""
     try:
         return int(dt_str[11:13]) if len(dt_str) >= 13 else -1
     except (ValueError, IndexError):
@@ -49,7 +31,7 @@ def _hour(dt_str):
 def analyze_volume(events, cutoff_days=14):
     """Daily email volume: counts per day, day-of-week average, trend."""
     daily = Counter()
-    dow = defaultdict(list)  # day-of-week -> [counts]
+    dow = defaultdict(list)  # weekday -> [counts]
     for e in events:
         d = _day(e.get("ts"))
         if d:
@@ -60,7 +42,7 @@ def analyze_volume(events, cutoff_days=14):
             except (ValueError, IndexError):
                 pass
 
-    # Recent trend: last 7 days vs the 7 before that
+    # Trend: last 7 days vs the 7 before.
     sorted_days = sorted(daily.keys())
     recent = sorted_days[-7:] if len(sorted_days) >= 7 else sorted_days
     prior = sorted_days[-14:-7] if len(sorted_days) >= 14 else []
@@ -74,7 +56,6 @@ def analyze_volume(events, cutoff_days=14):
     elif prior_avg > 0 and recent_avg < prior_avg * 0.7:
         trend = "falling"
 
-    # Day-of-week averages
     weekday_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     dow_avg = {}
     for d, counts in sorted(dow.items()):
@@ -90,21 +71,18 @@ def analyze_volume(events, cutoff_days=14):
 
 
 def analyze_urgency(events):
-    """URGENT/FYI/NOISE distribution over time."""
+    """Stub: URGENT/FYI/NOISE distribution (not implemented)."""
     daily_urgency = defaultdict(lambda: {"URGENT": 0, "FYI": 0, "NOISE": 0})
     for e in events:
         d = _day(e.get("ts"))
         payload = e.get("payload", {}) or {}
-        # For inbox_triage results, look at the alert body
         if e.get("type") == "inbox_triage_result":
-            # Parse the triage output for counts
             pass
     return {}
 
 
 def analyze_senders(events):
-    """Who emails the most, who's always urgent."""
-    # Requires inbox_triage to publish sender info in event payload
+    """Stub: sender frequency; needs sender info in triage event payloads."""
     return {}
 
 
@@ -130,7 +108,7 @@ def analyze_hourly(events):
 
 
 def detect_anomalies(events):
-    """Find anomalous patterns using rolling mean/stddev."""
+    """Days whose event count deviates from the mean by more than ANOMALY_ZSCORE."""
     daily = Counter()
     for e in events:
         d = _day(e.get("ts"))
@@ -187,7 +165,7 @@ def compute_insights(bus):
         },
         "volume": volume,
         "hourly": hourly,
-        "anomalies": anomalies[:5],  # max 5 anomalies
+        "anomalies": anomalies[:5],
     }
 
 

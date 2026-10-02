@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-"""Offline selftest for sasha-hermes' inbox triage.
+"""Offline selftest for inbox_triage: both fetchers run against fake connector dispatchers.
 
 Run: ``python3 sasha-hermes/selftest.py`` from ``~/Github/CC``.
-
-No network, no vault, no mailbox: both fetchers are pointed at a fake
-``dispatch`` and everything asserted is BEHAVIOUR — what the fetcher returns,
-and what it does when a connector says ``unavailable``.
-
-Written for the 2026-09-16 bug bash (rows 19 and 20), which found that the
-Gmail fetcher's time window collapsed to calendar-day granularity and that the
-Proton fetcher still spoke IMAP itself and returned ``[]`` on every failure.
-There was no suite here before; there is one now, because a consumer with no
-test is where a connector's guarantees quietly stop applying.
 """
 import datetime as dt
 import os
@@ -46,12 +36,7 @@ class FakeEnv:
 
 
 def _install_fake(module_name, env, seen):
-    """Put a fake connector module in ``sys.modules`` so the fetcher imports it.
-
-    The fetchers import their connector INSIDE the function, deliberately (the
-    cron path must not pay for an import it may not use), which is also what
-    makes this substitution possible without touching the code under test.
-    """
+    """Put a fake connector module in ``sys.modules``; the fetchers import it lazily."""
     import types
     mod = types.ModuleType(module_name)
 
@@ -65,11 +50,8 @@ def _install_fake(module_name, env, seen):
     return mod
 
 
-def main():  # noqa: C901 — a flat list of assertions reads better than helpers
-    # --- ROW 19: the since-window is exact, not calendar-day ---------------
-    # Gmail's `after:` and IMAP's `SINCE` are day-granular, so a job that runs
-    # every 30 minutes and asks for "since 14:00" was handed everything back to
-    # midnight and re-triaged the whole day.
+def main():  # noqa: C901
+    # Gmail since-window is applied exactly, not at day granularity.
     since = "2026-09-16T14:00:00+00:00"
     rows = [
         {"id": "gm-1", "from": "a@x.io", "subject": "before the window",
@@ -98,7 +80,6 @@ def main():  # noqa: C901 — a flat list of assertions reads better than helper
     check("row 19: no since means no client-side filtering",
           len(T._fetch_emails(None)) == len(rows))
 
-    # The predicate itself, directly.
     check("row 19: _at_or_after is inclusive at the bound",
           T._at_or_after("Wed, 16 Sep 2026 14:00:00 +0000", since))
     check("row 19: _at_or_after refuses a second before the bound",
@@ -106,9 +87,7 @@ def main():  # noqa: C901 — a flat list of assertions reads better than helper
     check("row 19: a garbage since_iso does not drop everything",
           T._at_or_after("Wed, 16 Sep 2026 09:00:00 +0000", "not-a-time"))
 
-    # --- ROW 20: Proton goes through the connector, and a failure is LOUD --
-    # It used to open its own IMAP socket, read ~/.key directly, and return []
-    # on every failure — an empty Proton inbox that is not empty.
+    # Proton goes through its connector and raises when unavailable.
     proton_rows = [{"id": "uid-7", "from": "e@x.io", "subject": "hello",
                     "date": "Wed, 16 Sep 2026 15:00:00 +0000"}]
     pseen = []
@@ -136,7 +115,7 @@ def main():  # noqa: C901 — a flat list of assertions reads better than helper
         check("row 20: ...and the refusal names the human's next step",
               "bridge password" in str(e))
 
-    # And the Gmail half still behaves the same way it already did.
+    # Gmail also raises when unavailable.
     _install_fake("google_connector",
                   FakeEnv("unavailable", None, code="VAULT_LOCKED",
                           recovery="run keyvault/unlock.sh"), [])
@@ -147,7 +126,7 @@ def main():  # noqa: C901 — a flat list of assertions reads better than helper
         check("an unreadable Gmail mailbox is NOT an empty one",
               "VAULT_LOCKED" in str(e))
 
-    # --- the OTP guard is still on this path ------------------------------
+    # OTP guard.
     subj, snip = T._guard_otp("Your verification code is 483920",
                               "Enter this code to complete your sign-in.")
     check("a one-time code never survives the triage record",

@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-# Sasha on hermes — macOS SERVICE install (launchd, no root, no systemd).
-# Two per-user LaunchAgents that auto-start on login and auto-restart on crash:
-#   com.sasha.gw   — the hermes gateway (loopback ws) via sasha-gw
-#   com.sasha.web  — the dashboard (native chat), loopback
-# Survives logout/reboot; stops the Mac from needing a terminal held open.
+# Install Sasha on macOS as two per-user LaunchAgents: com.sasha.gw (hermes gateway) and com.sasha.web (dashboard).
 #
-#   ./install-mac.sh [--name Craig] [--place "Home"] [--port 7790] [--gw-port 7792]
+#   ./install-mac.sh [--name NAME] [--place "Home"] [--port 7790] [--gw-port 7792]
 #   ./install-mac.sh --uninstall
 #
-# Prereqs: hermes on PATH, hermes web UI built once (run ./run-mac.sh first —
-# it builds it and proves the config; this promotes that to a service).
+# Requires hermes on PATH and its web UI built once (run ./run-mac.sh first).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LA="$HOME/Library/LaunchAgents"

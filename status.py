@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
-"""System Status — one pane of glass for the whole AI-OS.
+"""AI-OS system status as GREEN/YELLOW/RED checks.
 
-Three layers:
-  Terminal:  python3 status.py             → compact green/yellow/red status
-  Vault:     python3 status.py --write-note → full daily page in ~/notes/00 Meta/
-  MCP:       python3 status.py --json       → machine-readable for Dex to query
-
-Status levels per check:
-  GREEN  — nominal, no action
-  YELLOW — degraded but limping
-  RED    — broken, needs attention
-
-Design: single script, no external deps (stdlib + urllib for API calls).
-Runs in <2s so it can be called on every /status invocation.
+  python3 status.py              compact terminal status
+  python3 status.py --write-note daily status page in ~/notes/00 Meta/
+  python3 status.py --json       machine-readable output
 """
 import json
 import os
@@ -35,10 +26,7 @@ EVENT_BUS_DB = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "e
 KNOWLEDGE_INDEX = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "knowledge", "index.npz")
 OLLAMA_URL = "http://192.168.86.21:11434"
 
-# ---------------------------------------------------------------------------
-# Checks — each returns (label, status, detail)
-# status: "GREEN" | "YELLOW" | "RED"
-# ---------------------------------------------------------------------------
+# Each check returns (label, status, detail); status is "GREEN", "YELLOW" or "RED".
 
 def _ps_grep(name):
     """Check if a process named ``name`` is running."""
@@ -58,19 +46,14 @@ def _api(url, timeout=5):
         return None
 
 
-# (check_daemons removed Story 021 — the watchdog/agent_runner framework was
-# retired as redundant with hermes cron; see sasha-hermes/attic/.)
-
-
 def check_ollama():
-    """.21 reachable? gemma4:e4b loaded?"""
+    """Ollama reachable, and a gemma4 model installed?"""
     tags = _api(OLLAMA_URL + "/api/tags", timeout=3)
     if not tags:
         return (".21", "RED", "unreachable")
     models = [m["name"] for m in tags.get("models", [])]
     has_gemma = any("gemma4" in m for m in models)
     has_granite = any("granite" in m for m in models)
-    # Check if a model is loaded
     ps = _api(OLLAMA_URL + "/api/ps", timeout=3)
     loaded = []
     if ps:
@@ -83,8 +66,7 @@ def check_ollama():
 
 
 def check_mcp():
-    """All 8 MCP servers registered and responsive?"""
-    # Load Hermes config and count enabled MCP servers
+    """Count enabled vs configured MCP servers in the hermes config."""
     import yaml  # optional dep; falls back to grep
     try:
         cfg_path = os.path.join(HERMES, "config.yaml")
@@ -94,7 +76,6 @@ def check_mcp():
         enabled = sum(1 for s in servers.values() if s.get("enabled", False))
         total = len(servers)
     except Exception:
-        # Fallback: grep the config
         try:
             r = subprocess.run(
                 ["grep", "-c", "enabled: true", os.path.join(HERMES, "config.yaml")],
@@ -113,14 +94,7 @@ def check_mcp():
 
 
 def check_cron():
-    """All cron jobs running?
-
-    Counts systemd user timers, not `hermes cron list`. The estate moved to
-    systemd on 2026-07-26 and every hermes job was paused in the same cutover,
-    so the old check reported "0 active jobs" — YELLOW, whole status DEGRADED —
-    while all 81 timers were running fine. It measured a scheduler that had been
-    retired hours earlier. See cron/CUTOVER.md and cron/AUDIT-2026-07-26.md.
-    """
+    """Count active cc-* systemd user timers."""
     try:
         r = subprocess.run(
             ["systemctl", "--user", "list-timers", "cc-*", "--all", "--no-pager",
@@ -206,9 +180,6 @@ def check_agents():
             "%d today · %d total" % (today_count, total))
 
 
-# ---------------------------------------------------------------------------
-# Registry of all checks
-# ---------------------------------------------------------------------------
 CHECKS = [
     check_ollama,
     check_mcp,
@@ -246,9 +217,6 @@ def run_checks():
     return results, overall
 
 
-# ---------------------------------------------------------------------------
-# Layer 1: Terminal output (compact, fits in one screen)
-# ---------------------------------------------------------------------------
 def render_terminal(results, overall):
     now = datetime.now(timezone.utc)
     mst = now - timedelta(hours=7)
@@ -271,9 +239,6 @@ def render_terminal(results, overall):
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Layer 2: Vault note (full daily status page)
-# ---------------------------------------------------------------------------
 def render_note(results, overall):
     now = datetime.now(timezone.utc)
     mst = now - timedelta(hours=7)
@@ -346,9 +311,6 @@ def render_note(results, overall):
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Layer 3: JSON (for MCP / Dex queries)
-# ---------------------------------------------------------------------------
 def render_json(results, overall):
     return json.dumps({
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -357,9 +319,6 @@ def render_json(results, overall):
     }, indent=2)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 def main():
     import argparse
     ap = argparse.ArgumentParser(description="System status — one pane of glass")
@@ -384,12 +343,7 @@ def main():
     if args.json:
         print(render_json(results, overall))
     else:
-        # Story 008 (cron/MANIFEST.md): when this runs as a scheduled job,
-        # noticing that something is degraded is the job WORKING. Lead with the
-        # FINDINGS: line log_run stores as the run's summary, and exit 0 below —
-        # non-zero is reserved for this script actually breaking. Before the
-        # scheduled path was instrumented at all (2026-07-26) a DEGRADED exit 1
-        # was indistinguishable from a crash, and invisible either way.
+        # Scheduled runs report degradation as a FINDINGS: line and exit 0.
         if args.write_note and overall != "GREEN":
             bad = [f"{name} {status}" for name, status, _ in results
                    if status != "GREEN"]
@@ -401,14 +355,10 @@ def main():
         note = render_note(results, overall)
         with open(STATUS_NOTE, "w", encoding="utf-8") as fh:
             fh.write(note)
-        # stdout, not stderr: this is a success confirmation, and freshness's
-        # soft_failure() reads stderr-on-a-zero-exit as "the job is swallowing
-        # its own errors" — which flagged this job SOFTFAIL on 12/12 runs for
-        # saying it did exactly what it was asked to do (found 2026-08-09).
+        # stdout: stderr on a zero exit is read as a soft failure by the monitor.
         print("  Written to %s" % STATUS_NOTE)
 
-    # Interactive runs keep the old exit-code contract (0/1/2 by severity);
-    # the scheduled --write-note path uses found-work semantics instead.
+    # Interactive runs exit 0/1/2 by severity; --write-note always exits 0.
     if args.write_note:
         return 0
     return 0 if overall == "GREEN" else (1 if overall == "YELLOW" else 2)

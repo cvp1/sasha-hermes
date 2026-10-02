@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""MCP server wrapping the persistent knowledge index — automatic per-turn retrieval.
-
-Exposes query() and status() tools so any model can retrieve relevant context
-from memory + vault + work product without an explicit /recall call.
+"""Stdio MCP server exposing the knowledge index as retrieve and status tools.
 
 Usage:
     python3 knowledge_mcp_server.py
-
-HOMING (Story 019 — decided once): this server GRANDFATHERS in `_lib`. It wraps
-`_lib/knowledge_index.py`, whose home is not yet settled — the index is consumed
-by the Sasha-side files (`ranch_checks.py`, `sasha_dashboard.py`, `status.py`,
-`dashboard.py`) that Story 021 rehomes out of `_lib`. Moving the server before
-its library would just strand it. When Story 021 lands `knowledge_index.py` in
-its real home, move THIS file alongside it (and repoint hermes config.yaml's
-`knowledge:` entry) in the same pass. Until then it stays here on purpose — not
-by neglect. See cc-skills/MCP.md.
 """
 import json, os, sys
 
-# Fix path before importing MCP (avoids _lib/secrets.py shadowing stdlib)
+# Import mcp with this directory off sys.path so local modules cannot shadow stdlib.
 _HERMES_CWD = os.getcwd()
 os.chdir("/tmp")
 _HERMES_SKIP = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +17,7 @@ sys.path.insert(0, _HERMES_SKIP)
 
 from knowledge_index import query as _query, cmd_status, INDEX_FILE
 
-mcp = FastMCP("knowledge", instructions="Persistent knowledge index — automatically retrieve relevant context from Craig's memory, vault, and work product.")
+mcp = FastMCP("knowledge", instructions="Persistent knowledge index — automatically retrieve relevant context from the user's memory, vault, and work product.")
 
 
 @mcp.tool(
@@ -40,7 +28,7 @@ def knowledge_retrieve(query: str, top: int = 5) -> str:
     """Search the knowledge index for passages relevant to the query.
 
     Args:
-        query: Search query — what you want to find in Craig's knowledge base.
+        query: Search query — what you want to find in the user's knowledge base.
         top: Number of passages to return (default 5, max 15).
     Returns:
         Ranked passages with source, score, and text.

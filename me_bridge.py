@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""Wire hermes to the me/ passport (~/ai-os/me/).
+"""Insert or replace a marked block in ~/.hermes/SOUL.md pointing the agent at the me/ passport files.
 
-Injects an idempotent marked block into ~/.hermes/SOUL.md — the identity file
-hermes composes into EVERY session's system prompt (agent/system_prompt.py:
-"stable — identity (SOUL.md ...)"; operational-context.md is NOT on the
-/api/ws gateway path — learned by probing a fresh gateway) — telling the agent
-to read, honor, and maintain the same WHOAMI.md / HOW-I-WORK.md files that
-Sasha-on-Claude-Code writes. This is the graduation guarantee: two separate
-products, one identity, nothing lost moving between them.
-
-Run AS THE TARGET USER (no root):  python3 me_bridge.py [me_dir]
-Idempotent: re-running replaces the marked block, never duplicates it.
+SOUL.md is composed into every hermes session's system prompt.
+Run as the target user:  python3 me_bridge.py [me_dir]
 """
 import os, re, sys
 

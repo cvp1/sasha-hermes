@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
-# Launch the hermes web gateway, tolerating CLI drift across hermes builds
-# (learned live: one household ran two different tracks — one with the
-# headless `serve` subcommand, one with `dashboard` only and embedded chat
-# gated behind --tui / HERMES_DASHBOARD_TUI=1).
+# Launch the hermes web gateway on loopback: `hermes serve` if available, else `hermes dashboard` with supported flags.
 PORT="${1:-7792}"
 export HERMES_DASHBOARD_TUI=1
 run() { echo "sasha-gw: running: hermes $*" >&2; exec bash -lc "exec hermes $*"; }

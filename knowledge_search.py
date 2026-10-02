@@ -21,27 +21,23 @@ def embed(text):
         return json.loads(r.read())["embedding"]
 
 def search(query, top=10, min_score=0.3):
-    # Load index
     idx = np.load(os.path.join(INDEX_DIR, "index.npz"))
-    embeddings = idx["embeddings"]  # (N, 768)
+    embeddings = idx["embeddings"]
 
-    # Load metadata
     metas = []
     with open(os.path.join(INDEX_DIR, "meta.jsonl")) as f:
         for line in f:
             metas.append(json.loads(line))
 
-    # Embed query
     q_vec = np.array(embed(query), dtype=np.float32)
 
-    # Cosine similarity (normalized dot product)
+    # Cosine similarity
     norms = np.linalg.norm(embeddings, axis=1)
     q_norm = np.linalg.norm(q_vec)
     if q_norm == 0:
         return []
     scores = np.dot(embeddings, q_vec) / (norms * q_norm + 1e-10)
 
-    # Get top indices above threshold
     indices = np.where(scores >= min_score)[0]
     order = indices[np.argsort(-scores[indices])][:top]
 
@@ -49,7 +45,6 @@ def search(query, top=10, min_score=0.3):
     for i in order:
         m = metas[i]
         text = m.get("text", "")[:300]
-        # Truncate to first sentence-ish
         text = text.strip()[:250]
         results.append({
             "score": round(float(scores[i]), 3),

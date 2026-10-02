@@ -13,14 +13,11 @@ sys.path.insert(0, CC)
 HOME = os.path.expanduser("~")
 AGENTS_DIR = os.path.join(HOME, "notes", "06 Logs", "Agents")
 
-# Loopback-bound ttyd terminals, reverse-proxied under /term/<id>/ behind this
-# dashboard's Basic Auth. Nothing writable listens on 0.0.0.0 anymore.
+# Loopback ttyd terminals, reverse-proxied under /term/<id>/ behind Basic Auth.
 TERM_PORTS = {"bash": 8081, "hermes": 8082}
 
-# ---- INT-4 usage telemetry: aggregate EVENT COUNTS only. One JSONL line per
-# UI event ({ts, e, ip}) — never search queries, terminal content, or any
-# transcript. /api/usage serves per-day aggregates + a 30-min-gap session
-# estimate for the INT-4 reach report.
+# Usage telemetry: one JSONL line per UI event ({ts, e, ip}), never content.
+# /api/usage serves per-day counts and a 30-minute-gap session estimate.
 USAGE_PATH = os.path.join(HOME, ".aios-usage.jsonl")
 _usage_lock = threading.Lock()
 
@@ -52,7 +49,7 @@ def usage_summary():
         sessions[d] = sum(1 for i, t in enumerate(ts) if i == 0 or t - ts[i-1] > 1800)
     return {"days": days, "sessions": sessions}
 
-# ---- Cached values (refresh every 60s) ----
+# Check results are cached for 60s.
 _cache = {"mcp": None, "mcp_ts": 0, "cron": None, "cron_ts": 0}
 
 def _pgrep(name):
@@ -110,7 +107,7 @@ def _check_cron():
     if _cache["cron"] and now - _cache["cron_ts"] < 60:
         return _cache["cron"]
     try:
-        r = subprocess.run(["/home/cvande/.local/bin/hermes","cron","list"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run([os.environ.get("HERMES_BIN", os.path.expanduser("~/.local/bin/hermes")),"cron","list"], capture_output=True, text=True, timeout=5)
         n = sum(1 for l in r.stdout.split("\n") if "[active]" in l and l[:1] in " \t")
         rv = ("Cron","GREEN" if n>=3 else "YELLOW",f"{n} active")
         _cache["cron"] = rv; _cache["cron_ts"] = now
@@ -156,7 +153,6 @@ def _check_agents():
     return ("Agents","GREEN","no output")
 
 def get_checks():
-    """Run all checks in parallel with ThreadPoolExecutor."""
     checks = []
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = {
@@ -191,13 +187,11 @@ def _run_ingest_plan():
                            capture_output=True, text=True, timeout=30,
                            cwd=os.path.join(CC, "wiki", "ingest"))
         out = (r.stdout or "").strip() + (("\n" + r.stderr.strip()) if r.stderr.strip() else "")
-        # Parse output for pending sources
         sources = []
         for line in (r.stdout or "").split("\n"):
             line = line.strip()
             if line and not line.startswith("[") and "inbox" not in line.lower() and "clear" not in line.lower() and "no unprocessed" not in line.lower():
                 sources.append(line)
-        # Count from final summary line
         count = 0
         for line in reversed((r.stdout or "").split("\n")):
             import re
@@ -232,7 +226,6 @@ def _run_board_consult(question, only=""):
     except Exception as e:
         return {"exit": 1, "error": str(e)}
 
-# ---- HTTP Server ----
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, d, s=200):
@@ -255,7 +248,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             decoded = base64.b64decode(auth[6:]).decode()
             user, pwd = decoded.split(":", 1)
-            # Try env vars first, then file
             expected_user = os.environ.get("DASH_USER")
             expected_pwd = os.environ.get("DASH_PASS")
             if expected_user and expected_pwd:
@@ -277,7 +269,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path):
         """Serve static files from doc directories under the same auth domain."""
-        # Map URL paths to filesystem dirs (mirrors nginx volume mounts)
         root_map = {
             "/reports":        os.path.join(HOME, "Github", "CC", "reports"),
             "/weather":        os.path.join(HOME, "Github", "CC", "ranch-weather", "docs"),
@@ -285,7 +276,6 @@ class Handler(BaseHTTPRequestHandler):
             "/frigate":        os.path.join(HOME, "Github", "CC", "frigate", "docs"),
             "/learn":          os.path.join(HOME, "Github", "CC", "learn"),
         }
-        # Find which root this path maps to
         matched_root = None
         rel = path
         for prefix, root in root_map.items():
@@ -299,13 +289,12 @@ class Handler(BaseHTTPRequestHandler):
 
         full = os.path.join(matched_root, rel) if rel else matched_root
         full = os.path.normpath(full)
-        # Security: prevent escaping the root
+        # Refuse paths that escape the root.
         if not full.startswith(os.path.normpath(matched_root)):
             self._json({"error":"bad path"},403)
             return
 
         if os.path.isdir(full):
-            # Serve index.html if exists, else directory listing
             idx = os.path.join(full, "index.html")
             if os.path.isfile(idx):
                 full = idx
@@ -389,9 +378,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _proxy_term(self):
-        """Transparently reverse-proxy /term/<id>/... to a loopback ttyd, under
-        this dashboard's auth. One raw-socket tunnel serves both the HTTP asset
-        fetches and the WebSocket upgrade — protocol-agnostic once bytes flow."""
+        """Reverse-proxy /term/<id>/... (HTTP and WebSocket) to a loopback ttyd."""
         parts = urlparse(self.path).path.split("/", 3)
         tid = parts[2] if len(parts) > 2 else ""
         port = TERM_PORTS.get(tid)
@@ -403,7 +390,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "unknown terminal"}, 404)
             return
         rest = parts[3] if len(parts) > 3 else ""
-        if rest == "":  # the iframe page mount itself, not assets/ws
+        if rest == "":  # the page mount, not assets/ws
             track("term:" + tid, self.client_address[0])
         try:
             backend = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -412,13 +399,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"terminal offline: {e}"}, 502)
             return
         try:
-            # A WebSocket upgrade needs its persistent Connection: Upgrade tunnel,
-            # pinned 1:1 to this backend. Every OTHER request is a plain HTTP asset
-            # fetch — force Connection: close so the browser can NOT reuse this
-            # client TCP connection for a different /term/<id>. This tunnel pins a
-            # whole keep-alive connection to ONE backend (chosen by the first
-            # request), so a reused connection would route e.g. /term/hermes/ to
-            # bash's ttyd (base -b /term/bash) which 404s any foreign path.
+            # Non-WebSocket requests get Connection: close so a kept-alive connection,
+            # pinned to this backend, is never reused for a different terminal.
             is_ws = self.headers.get("Upgrade", "").lower() == "websocket"
             head = f"{self.command} {self.path} {self.request_version}\r\n"
             for k, v in self.headers.items():
@@ -439,13 +421,10 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _pump(a, b):
-        """Bidirectional tunnel between two sockets — one thread per direction,
-        blocking mode. Blocking sends apply natural backpressure: a full kernel
-        send buffer makes sendall wait instead of raising EAGAIN, so a bursty
-        terminal (tmux full-screen redraws, WebGL output) can't tear the tunnel
-        down. The old select-loop ran the sockets non-blocking and treated a
-        send-side EAGAIN (a BlockingIOError, i.e. OSError) as fatal — which is
-        exactly what dropped live terminals to 'green then red' under load."""
+        """Bidirectional socket tunnel, one blocking thread per direction.
+
+        Blocking sends apply backpressure instead of failing on a full send buffer.
+        """
         a.setblocking(True); b.setblocking(True)
 
         def one_way(src, dst):
@@ -470,19 +449,17 @@ class Handler(BaseHTTPRequestHandler):
         one_way(a, b)
         t.join(timeout=5)
 
-    # Static paths that don't require auth
     PUBLIC_PREFIXES = ("/weather", "/qrz", "/reports", "/learn", "/frigate")
 
     def do_GET(self):
         p = urlparse(self.path).path
-        # Skip auth for public static paths
         if not p.startswith(self.PUBLIC_PREFIXES):
             if not self._check_auth(): return
         if p.startswith("/term/"):
             return self._proxy_term()
         if p == "/":
             track("load", self.client_address[0])
-            self._html(HTML)  # skills rendered inline in HTML
+            self._html(HTML)
         elif p == "/api/t":
             q = urlparse(self.path).query
             if q.startswith("e="): track(unquote(q[2:]), self.client_address[0])
@@ -525,12 +502,10 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/all":
             try:
                 checks = [{"label":l,"status":s,"detail":d} for l,s,d in get_checks()]
-                # Events
                 try:
                     b = __import__("_lib.event_bus", fromlist=["EventBus"]).EventBus()
                     evs = [{"source":e["source"],"type":e["type"],"ts":e["ts"]} for e in list(b.subscribe(since_id=0,limit=100))[-30:]]
                 except: evs = []
-                # Agents
                 try:
                     notes = []
                     for f in sorted(os.listdir(AGENTS_DIR), reverse=True)[:15] if os.path.exists(AGENTS_DIR) else []:
@@ -544,7 +519,6 @@ class Handler(BaseHTTPRequestHandler):
             q = urlparse(self.path).query
             if q.startswith("path="):
                 fp = unquote(q[5:])
-                # Handle relative paths by trying known base directories
                 if not fp.startswith("/"):
                     bases = [os.path.expanduser("~/notes"), os.path.expanduser("~/.claude/projects"), CC]
                     for b in bases:
@@ -563,7 +537,6 @@ class Handler(BaseHTTPRequestHandler):
                 else: self._json({"error":"path not allowed or not found"})
             else: self._json({"error":"no path"})
         else:
-            # Static files — no extra auth needed; already authed to reach dashboard
             self._serve_static(p)
 
     def do_POST(self):
@@ -616,9 +589,7 @@ class Handler(BaseHTTPRequestHandler):
         if "/api/" in str(a): print("[%s] %s" % (self.log_date_time_string(), f % a), file=sys.stderr)
 
 
-# ---- Skills (auto-discovered from ~/.hermes/skills/) ----
-
-# Default emoji mapping — extend or override by creating ~/.hermes/skills/.emoji.json
+# Skill icons; override with ~/.hermes/skills/.emoji.json
 DEFAULT_SKILL_ICONS = {
     "backup":"💾","restore":"♻️","triage":"📥","status":"❤️",
     "recall":"🧠","wiki":"📚","ingest":"📝","teach":"📖",
@@ -628,7 +599,7 @@ DEFAULT_SKILL_ICONS = {
 }
 
 def _discover_skills():
-    """Scan ~/.hermes/skills/ for available skills and auto-discover."""
+    """List (name, icon) for each skill directory in ~/.hermes/skills/."""
     skills_dir = os.path.join(HOME, ".hermes", "skills")
     icons = DEFAULT_SKILL_ICONS.copy()
     icon_file = os.path.join(skills_dir, ".emoji.json")
@@ -647,8 +618,7 @@ def _discover_skills():
 
 SKILLS = _discover_skills()
 
-# Curated favorites — skills you use often (others go under collapsible "All Skills")
-# Order matters: top items appear first in the sidebar
+# Shown first in the sidebar; other skills go under a collapsible "All Skills".
 FAVORITE_SKILLS = [
     "triage", "recall", "wiki", "ingest", "board",
     "backup", "restore", "signal-scan",
@@ -660,7 +630,6 @@ if SKILLS:
     favs = [(n,i) for n,i in SKILLS if n in fav_set]
     others = [(n,i) for n,i in SKILLS if n not in fav_set]
 
-    # Favorites
     SKILLS_HTML += '<div class="sh">Favorites</div>'
     if favs:
         for name, ico in favs:
@@ -668,7 +637,6 @@ if SKILLS:
     else:
         SKILLS_HTML += '<div class="sk" style="color:var(--faint);cursor:default;font-size:11px">None selected</div>'
 
-    # Collapsible "All Skills" section
     SKILLS_HTML += f'<div class="sh sh-c" onclick="toggleAllSkills()" id="all-sk-toggle">All Skills ({len(others)}) <span id="all-sk-arrow">▸</span></div><div id="all-sk-list" style="display:none">'
     for name, ico in others:
         SKILLS_HTML += f'<div class="sk" onclick="runSkill(\'{name}\')"><span class="sk-ico">{ico}</span><span class="sk-n">{name}</span></div>'
@@ -677,7 +645,6 @@ else:
     SKILLS_HTML += '<div class="sh">No skills found</div><div class="sk" style="color:var(--faint);cursor:default;font-size:11px">Run <code>hermes setup</code> first</div>'
 SKILLS_HTML += "</div>"
 
-# ---- Services (loaded from config file) ----
 SERVICES_FILE = os.path.join(CC, "_lib", "services.json")
 SERVICES_HTML = """<h2>Services</h2><div class="sc-grid" id="svc">"""
 if os.path.isfile(SERVICES_FILE):
@@ -876,7 +843,7 @@ HTML = """<!DOCTYPE html>
  <div class="lr" id="lr"></div>
 </div>
 <script>
-// INT-4 telemetry beacon — event names only, fire-and-forget
+// Telemetry beacon — event names only, fire-and-forget
 function trk(e){try{fetch('/api/t?e='+encodeURIComponent(e))}catch(_){}}
 // Terminal tabs — ttyd wraps tmux sessions so page refresh = reconnect to same session
 const TERMS=[{id:'bash',l:'bash',p:8081,ts:'dash-bash',spawned:true},{id:'hermes',l:'hermes',p:8082,ts:'dash-hermes',spawned:true}]; let tc=5;

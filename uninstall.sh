@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Remove Sasha's services for one user. Keeps config, auth, and usage data
-# (delete ~USER/.config/sasha and ~USER/.local/state/sasha yourself if wanted).
-#   sudo ./uninstall.sh --user sheridanh
+# Remove Sasha's systemd services for one user; config, auth and usage data are kept.
+#   sudo ./uninstall.sh --user NAME
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "must run as root"; exit 1; }
 USER_NAME=""

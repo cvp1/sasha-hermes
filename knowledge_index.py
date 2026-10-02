@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Knowledge index — warm vector store over memory, vault, and work product.
-
-Builds and queries a local vector index using nomic-embed-text on .21.
-No external vector DB needed — the index is small enough for numpy + cosine.
+"""Local numpy vector index over memory, vault notes and work product, embedded via Ollama.
 
 Usage:
     python3 knowledge_index.py build     # (re)build the index from all sources
@@ -23,16 +20,15 @@ EMBED_MODEL = "nomic-embed-text"
 INDEX_FILE = os.path.join(INDEX_DIR, "index.npz")
 META_FILE = os.path.join(INDEX_DIR, "meta.jsonl")
 
-# Sources to index
 SOURCES = {
-    "mem": os.path.join(HOME, ".claude/projects/-home-cvande-Github-CC/memory"),
+    "mem": os.path.join(HOME, ".claude/projects", CC.replace("/", "-"), "memory"),
     "vault": os.path.join(HOME, "notes"),
     "work": os.path.join(CC),
 }
 
 
 def _embed(text):
-    """Get embedding vector from .21."""
+    """Embedding vector for text from the Ollama embeddings API."""
     body = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode()
     req = urllib.request.Request(EMBED_URL, data=body,
                                  headers={"Content-Type": "application/json"})
@@ -42,7 +38,7 @@ def _embed(text):
 
 
 def _chunk_text(text, max_chars=800):
-    """Split text into overlapping chunks at paragraph boundaries."""
+    """Split text into chunks of up to max_chars at paragraph boundaries."""
     if len(text) <= max_chars:
         return [text.strip()]
     chunks = []
@@ -64,7 +60,6 @@ def _chunk_text(text, max_chars=800):
 
 def _collect_docs():
     """Yield (source, kind, path, text) for every document to index."""
-    # Memory files
     mem_dir = Path(SOURCES["mem"])
     if mem_dir.exists():
         for f in sorted(mem_dir.glob("*.md")):
@@ -77,7 +72,6 @@ def _collect_docs():
             except Exception:
                 pass
 
-    # Vault notes (Obsidian, .md files)
     vault_dir = Path(SOURCES["vault"])
     if vault_dir.exists():
         for f in sorted(vault_dir.rglob("*.md")):
@@ -85,14 +79,12 @@ def _collect_docs():
                 continue
             try:
                 text = f.read_text(encoding="utf-8", errors="replace")
-                # Strip YAML frontmatter
                 text = re.sub(r"^---\n.*?\n---\n", "", text, flags=re.DOTALL)
                 if len(text) > 50:
                     yield ("vault", "note", str(f.relative_to(vault_dir)), text)
             except Exception:
                 pass
 
-    # Work product — key files from CC workspace
     work_dirs = [
         ("ai-os-pm", ["BACKLOG.md", "STRATEGY.md"]),
         ("career-mgmt", ["CAREER.md", "pipeline.json"]),
@@ -108,7 +100,6 @@ def _collect_docs():
                     yield ("work", rel, str(path), text)
                 except Exception:
                     pass
-            # Directory of files
             if path.is_dir():
                 for f in sorted(path.glob("*.md")):
                     try:
@@ -172,23 +163,19 @@ def cmd_query(query, top=5):
     if not os.path.exists(INDEX_FILE):
         return json.dumps({"error": "index not built. Run 'knowledge_index.py build' first."})
 
-    # Load index
     data = np.load(INDEX_FILE)
     embeddings = data["embeddings"]
     with open(META_FILE) as fh:
         meta = [json.loads(line) for line in fh]
 
-    # Embed query
     qvec = _embed(query)
     if not qvec:
         return json.dumps({"error": "query embedding failed"})
     qarr = np.array(qvec, dtype=np.float32).reshape(1, -1)
 
-    # Cosine similarity
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     sims = (embeddings @ qarr.T).flatten() / (norms.flatten() * np.linalg.norm(qarr) + 1e-8)
 
-    # Top-K
     top_k = min(top, len(sims))
     idx = np.argpartition(sims, -top_k)[-top_k:]
     idx = idx[np.argsort(-sims[idx])]
@@ -229,7 +216,7 @@ def cmd_status():
 
 
 def query(query, top=5):
-    """Programmatic query interface — returns parsed results for MCP server."""
+    """Query results as a list, or an error dict."""
     result_str = cmd_query(query, top=top)
     data = json.loads(result_str)
     if "error" in data:

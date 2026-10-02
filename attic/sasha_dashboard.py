@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sasha Dashboard — Sheridan's AI-OS companion."""
+"""Sasha dashboard: a household web front end to the AI-OS chat and checks."""
 import json, os, subprocess, sys, sqlite3, time, urllib.request, socket, select, threading
 from datetime import datetime
 from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -13,14 +13,11 @@ sys.path.insert(0, CC)
 HOME = os.path.expanduser("~")
 AGENTS_DIR = os.path.join(HOME, "notes", "06 Logs", "Agents")
 
-# Loopback-bound ttyd terminals, reverse-proxied under /term/<id>/ behind this
-# dashboard's Basic Auth. Nothing writable listens on 0.0.0.0 anymore.
+# Loopback ttyd terminals, reverse-proxied under /term/<id>/ behind Basic Auth.
 TERM_PORTS = {"bash": 8083, "hermes": 8084}
 
-# ---- INT-4 usage telemetry: aggregate EVENT COUNTS only. One JSONL line per
-# UI event ({ts, e, ip}) — never search queries, terminal content, or any
-# transcript. /api/usage serves per-day aggregates + a 30-min-gap session
-# estimate for the INT-4 reach report.
+# Usage telemetry: one JSONL line per UI event ({ts, e, ip}), never content.
+# /api/usage serves per-day counts and a 30-minute-gap session estimate.
 USAGE_PATH = os.path.join(HOME, ".aios-usage.jsonl")
 _usage_lock = threading.Lock()
 
@@ -52,7 +49,7 @@ def usage_summary():
         sessions[d] = sum(1 for i, t in enumerate(ts) if i == 0 or t - ts[i-1] > 1800)
     return {"days": days, "sessions": sessions}
 
-# ---- Cached values (refresh every 60s) ----
+# Check results are cached for 60s.
 _cache = {"mcp": None, "mcp_ts": 0, "cron": None, "cron_ts": 0}
 
 def _pgrep(name):
@@ -156,7 +153,6 @@ def _check_agents():
     return ("Agents","GREEN","no output")
 
 def get_checks():
-    """Run all checks in parallel with ThreadPoolExecutor."""
     checks = []
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = {
@@ -183,7 +179,6 @@ def _get_ds_key():
     except: pass
     return ""
 
-# ---- HTTP Server ----
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, d, s=200):
@@ -219,7 +214,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path):
         """Serve static files from doc directories under the same auth domain."""
-        # Map URL paths to filesystem dirs (mirrors nginx volume mounts)
         root_map = {
             "/reports":        os.path.join(HOME, "Github", "CC", "reports"),
             "/weather":        os.path.join(HOME, "Github", "CC", "ranch-weather", "docs"),
@@ -227,7 +221,6 @@ class Handler(BaseHTTPRequestHandler):
             "/frigate":        os.path.join(HOME, "Github", "CC", "frigate", "docs"),
             "/learn":          os.path.join(HOME, "Github", "CC", "learn"),
         }
-        # Find which root this path maps to
         matched_root = None
         rel = path
         for prefix, root in root_map.items():
@@ -241,13 +234,12 @@ class Handler(BaseHTTPRequestHandler):
 
         full = os.path.join(matched_root, rel) if rel else matched_root
         full = os.path.normpath(full)
-        # Security: prevent escaping the root
+        # Refuse paths that escape the root.
         if not full.startswith(os.path.normpath(matched_root)):
             self._json({"error":"bad path"},403)
             return
 
         if os.path.isdir(full):
-            # Serve index.html if exists, else directory listing
             idx = os.path.join(full, "index.html")
             if os.path.isfile(idx):
                 full = idx
@@ -311,9 +303,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error":str(e)},500)
 
     def _proxy_term(self):
-        """Transparently reverse-proxy /term/<id>/... to a loopback ttyd, under
-        this dashboard's auth. One raw-socket tunnel serves both the HTTP asset
-        fetches and the WebSocket upgrade — protocol-agnostic once bytes flow."""
+        """Reverse-proxy /term/<id>/... (HTTP and WebSocket) to a loopback ttyd."""
         parts = urlparse(self.path).path.split("/", 3)
         tid = parts[2] if len(parts) > 2 else ""
         port = TERM_PORTS.get(tid)
@@ -325,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "unknown terminal"}, 404)
             return
         rest = parts[3] if len(parts) > 3 else ""
-        if rest == "":  # the iframe page mount itself, not assets/ws
+        if rest == "":  # the page mount, not assets/ws
             track("term:" + tid, self.client_address[0])
         try:
             backend = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -334,13 +324,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"terminal offline: {e}"}, 502)
             return
         try:
-            # A WebSocket upgrade needs its persistent Connection: Upgrade tunnel,
-            # pinned 1:1 to this backend. Every OTHER request is a plain HTTP asset
-            # fetch — force Connection: close so the browser can NOT reuse this
-            # client TCP connection for a different /term/<id>. This tunnel pins a
-            # whole keep-alive connection to ONE backend (chosen by the first
-            # request), so a reused connection would route e.g. /term/hermes/ to
-            # bash's ttyd (base -b /term/bash) which 404s any foreign path.
+            # Non-WebSocket requests get Connection: close so a kept-alive connection,
+            # pinned to this backend, is never reused for a different terminal.
             is_ws = self.headers.get("Upgrade", "").lower() == "websocket"
             head = f"{self.command} {self.path} {self.request_version}\r\n"
             for k, v in self.headers.items():
@@ -361,13 +346,10 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _pump(a, b):
-        """Bidirectional tunnel between two sockets — one thread per direction,
-        blocking mode. Blocking sends apply backpressure: a full kernel send
-        buffer makes sendall WAIT instead of raising EAGAIN. The old non-blocking
-        select-loop treated a send-side EAGAIN (BlockingIOError, i.e. OSError) as
-        fatal — harmless over loopback (huge buffers) but it tore live terminals
-        down for real LAN clients (small buffers) on the first tmux redraw burst,
-        leaving a connected-but-blank 'black box' terminal."""
+        """Bidirectional socket tunnel, one blocking thread per direction.
+
+        Blocking sends apply backpressure instead of failing on a full send buffer.
+        """
         a.setblocking(True); b.setblocking(True)
 
         def one_way(src, dst):
@@ -398,7 +380,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._proxy_term()
         if p == "/":
             track("load", self.client_address[0])
-            self._html(HTML)  # skills rendered inline in HTML
+            self._html(HTML)
         elif p == "/api/t":
             q = urlparse(self.path).query
             if q.startswith("e="): track(unquote(q[2:]), self.client_address[0])
@@ -422,8 +404,6 @@ class Handler(BaseHTTPRequestHandler):
                     n.append({"file":f,"preview":c[:150]})
                 self._json({"notes":n})
             except Exception as e: self._json({"error":str(e)})
-        # /api/exec removed 2026-07-04 — the redesigned UI spawns no terminals
-        # client-side, so an authed arbitrary-shell endpoint has no reason to exist.
         elif p == "/api/search":
             q = urlparse(self.path).query
             if q.startswith("q="):
@@ -435,12 +415,10 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/all":
             try:
                 checks = [{"label":l,"status":s,"detail":d} for l,s,d in get_checks()]
-                # Events
                 try:
                     b = __import__("_lib.event_bus", fromlist=["EventBus"]).EventBus()
                     evs = [{"source":e["source"],"type":e["type"],"ts":e["ts"]} for e in list(b.subscribe(since_id=0,limit=100))[-30:]]
                 except: evs = []
-                # Agents
                 try:
                     notes = []
                     for f in sorted(os.listdir(AGENTS_DIR), reverse=True)[:15] if os.path.exists(AGENTS_DIR) else []:
@@ -454,7 +432,6 @@ class Handler(BaseHTTPRequestHandler):
             q = urlparse(self.path).query
             if q.startswith("path="):
                 fp = unquote(q[5:])
-                # Handle relative paths by trying known base directories
                 if not fp.startswith("/"):
                     bases = [os.path.expanduser("~/notes"), os.path.expanduser("~/.claude/projects"), CC]
                     for b in bases:
@@ -473,7 +450,6 @@ class Handler(BaseHTTPRequestHandler):
                 else: self._json({"error":"path not allowed or not found"})
             else: self._json({"error":"no path"})
         else:
-            # Try serving as static file (docs, reports, weather, etc.)
             self._serve_static(p)
 
     def do_POST(self):
@@ -510,7 +486,6 @@ class Handler(BaseHTTPRequestHandler):
         if "/api/" in str(a): print("[%s] %s" % (self.log_date_time_string(), f % a), file=sys.stderr)
 
 
-# ---- Skills (server-side rendered, static) ----
 SKILLS_MAP = {
     "board":"📋","capture":"📸","improve":"✨","teach":"📖",
     "wiki":"📚","recall":"🧠","triage":"📥","ingest":"📝",
@@ -548,8 +523,8 @@ HTML = """<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,550;1,9..144,450&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <style>
  :root{
-   /* Palette A — "high-desert morning": warm paper ground, ink brown, one clay
-      action color, ranch sage for good news. Craig picked it 2026-07-04. */
+   /* Palette: "high-desert morning" — warm paper ground, ink brown, one clay
+      action color, sage for good news. */
    --dusk:#F6F1E7; --adobe:#FDFAF4; --raise:#F3EBDC;
    --moon:#33291F; --sand:#4A3F32; --quail:#7A6E5F; --faint:#9C8F7D;
    --horizon:#B4552D; --ember:#9C4A26; --sage:#5C7A52; --sage-bg:rgba(111,143,102,.16);
@@ -706,7 +681,7 @@ HTML = """<!DOCTYPE html>
   <div id="greet-row">
    <div>
     <div class="eyebrow" id="dateline">The ranch</div>
-    <h1 id="greet">Hello, Sheridan</h1>
+    <h1 id="greet">Hello</h1>
     <div id="sub">I&rsquo;m Sasha &mdash; type anything in the chat below, or start with one of these.</div>
    </div>
    <button id="pulse" onclick="toggleHood(true)" title="How things are running">&#9679; Checking&hellip;</button>
@@ -748,14 +723,14 @@ HTML = """<!DOCTYPE html>
  </div>
 </div>
 <script>
-// INT-4 telemetry beacon — event names only, fire-and-forget
+// Telemetry beacon — event names only, fire-and-forget
 function trk(e){try{fetch('/api/t?e='+encodeURIComponent(e))}catch(_){}}
 
 // Greeting — time-aware, plain words
 (function(){
   const now=new Date(),h=now.getHours();
   const part=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-  document.getElementById('greet').textContent=part+', Sheridan';
+  document.getElementById('greet').textContent=part;
   document.getElementById('dateline').textContent='The ranch \u00b7 '+now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
 })();
 

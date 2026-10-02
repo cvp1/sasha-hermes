@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Sasha on hermes — macOS / laptop mode. No root, no systemd, no ttyd:
-# native ws chat only. Starts the hermes gateway (background) + the dashboard
-# (foreground); Ctrl-C stops both. First run creates your config + sign-in.
+# Run Sasha in the foreground on macOS: hermes gateway in the background, dashboard in front; Ctrl-C stops both.
+# The first run creates the config and sign-in.
 #
-#   ./run-mac.sh [--name Craig] [--place "Home"] [--port 7790] [--gw-port 7792]
+#   ./run-mac.sh [--name NAME] [--place "Home"] [--port 7790] [--gw-port 7792]
 #
 # Prereqs: python3, and `hermes` on PATH (pip install hermes-agent && hermes setup).
 set -euo pipefail
@@ -62,14 +61,12 @@ fi
 echo "==> me/ passport bridge (~/.hermes/SOUL.md -> ~/ai-os/me/)"
 python3 "$HERE/me_bridge.py"
 
-# Find the hermes web/ dir (needed to build the UI once). Official installer
-# lays it under $HERMES_HOME/hermes-agent; git checkouts vary.
+# Locate the hermes web/ dir, needed to build the UI once.
 find_web_dir() {
   for d in "${HERMES_HOME:-$HOME/.hermes}/hermes-agent/web" \
            "$HOME/.hermes/hermes-agent/web"; do
     [[ -f "$d/package.json" ]] && { echo "$d"; return 0; }
   done
-  # last resort: ask hermes' own python where the package lives
   local p; p="$(hermes --which-web 2>/dev/null || true)"
   [[ -n "$p" && -f "$p/package.json" ]] && { echo "$p"; return 0; }
   return 1

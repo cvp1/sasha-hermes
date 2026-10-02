@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Write the hermes surface's capability inventory into the shared
-~/ai-os/me/CAPABILITIES.md — the passport's "what you've got wired up" file.
+"""Write the HERMES-CAPS block of ~/ai-os/me/CAPABILITIES.md from installed hermes skills and MCP servers.
 
-Each Sasha surface OWNS a marked section and reads the WHOLE file, so either
-Sasha knows the full toolkit across surfaces and can route ("you don't have
-that here — on your Claude Code Sasha, type /prep"). This writes only the
-HERMES-CAPS block from live state (~/.hermes/skills/ + config.yaml
-mcp_servers); the AIOS-CAPS block is owned by Sasha-on-Claude-Code.
-
-Idempotent, best-effort — never raises into the caller (dashboard boot).
+Only this marked block is replaced. Best-effort: never raises into the caller.
 """
 import os, re
 
@@ -45,7 +38,7 @@ def _hermes_skills(home):
 
 
 def _hermes_connectors(home):
-    """Enabled mcp_servers from config.yaml — no yaml dep, tolerant line scan."""
+    """Enabled mcp_servers from ~/.hermes/config.yaml via a line scan (no yaml dependency)."""
     cfg = os.path.join(home, ".hermes", "config.yaml")
     servers = []
     try:
@@ -58,7 +51,7 @@ def _hermes_connectors(home):
                 continue
             if in_mcp:
                 if l and not l[0].isspace() and l.strip():
-                    break  # left the block
+                    break
                 m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", l)
                 if m:
                     cur = m.group(1)

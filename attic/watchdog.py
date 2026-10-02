@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""Watchdog — always-on agent that bridges real-world events onto the event bus.
-
-The only persistent process in the agent framework. Runs a tight polling loop
-and publishes events that everything else subscribes to.
-
-Design:
-  - Single process, single thread, async-free — polling loop at 1Hz
-  - Each watcher is a simple function that checks one source and returns events
-  - Failed watchers degrade silently (the rest of the system keeps running)
-  - Hermes-managed: started by cron @reboot or systemd
+"""Always-on daemon that polls once a second and publishes tick events to the event bus.
 
 Usage:
     python3 watchdog.py                    # foreground (for testing)
@@ -25,17 +16,15 @@ import sys
 import time
 from datetime import datetime, timezone
 
-# Add CC to path
 CC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, CC)
 from _lib import event_bus
 
-POLL_INTERVAL = 1.0  # seconds between full poll cycles
-HEARTBEAT_INTERVAL = 300  # publish watchdog_heartbeat every 5 min
+POLL_INTERVAL = 1.0  # seconds
+HEARTBEAT_INTERVAL = 300  # seconds
 
 
 class Watchdog:
-    """The always-on daemon. Run via .run()."""
 
     def __init__(self, bus=None, dry_run=False):
         self.bus = bus or event_bus.EventBus()
@@ -43,7 +32,7 @@ class Watchdog:
         self._running = True
         self._last_heartbeat = 0
         self._last_tick_30m = 0
-        self._last_tick_5am = None  # tracks by date, not timestamp
+        self._last_tick_5am = None  # date string
 
         signal.signal(signal.SIGTERM, self._signal)
         signal.signal(signal.SIGINT, self._signal)
@@ -60,40 +49,35 @@ class Watchdog:
         self.bus.publish(source, type, payload)
 
     def _poll_tickers(self):
-        """Fire time-based events."""
+        """Publish heartbeat, every_30min and daily_5am events when due."""
         now = time.time()
 
-        # Heartbeat every 5 min
         if now - self._last_heartbeat >= HEARTBEAT_INTERVAL:
             self._last_heartbeat = now
             self._publish("watchdog", "heartbeat",
                           {"uptime": time.monotonic()})
 
-        # every_30min tick
         if now - self._last_tick_30m >= 1800:
             self._last_tick_30m = now
             self._publish("watchdog", "every_30min", {})
 
-        # daily_5am tick (once per calendar day)
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         current_hour = datetime.now(timezone.utc).hour
         if self._last_tick_5am != today and current_hour == 12:  # 12 UTC = 5am MST
             self._last_tick_5am = today
             self._publish("watchdog", "daily_5am", {"date": today})
 
-        # daily_6am tick
-        if current_hour == 13:  # 13 UTC = 6am MST
-            # (already covered by daily_5am date check)
+        if current_hour == 13:
             pass
 
     def run(self):
-        """Main loop — poll all watchers at POLL_INTERVAL."""
+        """Poll tickers every POLL_INTERVAL until signalled."""
         self._publish("watchdog", "watchdog_started", {})
         while self._running:
             try:
                 self._poll_tickers()
             except Exception as e:
-                # Ticker failure should never crash the watchdog
+                # A ticker failure must not stop the loop.
                 if self.dry_run:
                     print("[dry] ticker error: %s" % e)
             time.sleep(POLL_INTERVAL)

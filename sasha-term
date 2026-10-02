@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# Sasha chat pane. Login shell for PATH (~/.local/bin); try the classic REPL
-# flag first, fall back to the `chat` subcommand (older hermes CLIs reject
-# --cli). This pane is a CHAT surface: no status bar, and the window tracks
-# the most recent client (window-size latest) so mixed-size browsers don't
-# leave a dotted unused region + redraw junk.
-#
-# If the agent exits, show a plain-words holding screen and retry — NEVER
-# fall through to a shell. A raw bash prompt rendered as the chat hero is
-# the worst possible surface for the person this page serves.
+# Chat pane: run hermes in a loop (`--cli`, else `chat`), never falling through to a shell.
+# window-size latest keeps mixed-size browser clients from leaving redraw artifacts.
 if [ -n "${TMUX:-}" ]; then
   tmux set-option status off 2>/dev/null
   tmux set-option window-size latest 2>/dev/null

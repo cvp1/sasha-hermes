@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Knowledge Gardener — daily scan for stale vault notes with related new signals.
+"""Find stale vault notes related to recent signal scans and write update proposals to _inbox/.
 
-Scans notes older than 30 days, cross-references them against recent signal scans
-and frontier developments, and drops update proposals into the /ingest inbox.
-
-Design:
-  - Read-only on the vault (never edits a note directly)
-  - Proposes updates as markdown files in _inbox/ for /ingest to process
-  - Uses the existing knowledge index for semantic matching (nomic-embed-text on .21)
-  - Best-effort: failures degrade to a note, never break the cron run
+Never edits vault notes directly.
 
 Usage:
     python3 knowledge_gardener.py [--dry-run] [--stale-days 45]
@@ -32,8 +25,8 @@ EMBED_URL = "http://192.168.86.21:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
 
 STALE_DAYS = 30
-MAX_PROPOSALS = 5  # per run — don't overwhelm the inbox
-PROPOSAL_COOLDOWN_DAYS = 30  # don't re-propose the same canonical note within this window
+MAX_PROPOSALS = 5  # per run
+PROPOSAL_COOLDOWN_DAYS = 30  # min days between proposals for the same note
 
 
 def _embed(text):
@@ -46,7 +39,6 @@ def _embed(text):
 
 
 def _cosine_sim(a, b):
-    """Cosine similarity between two vectors."""
     import math
     dot = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
@@ -55,12 +47,7 @@ def _cosine_sim(a, b):
 
 
 def _last_touched(path):
-    """Last meaningfully-touched epoch for a vault note: git commit date over
-    mtime. The vault is git-backed and Syncthing-synced; both checkout and
-    sync reset mtime (CLAUDE.md convention), so raw os.path.getmtime reads as
-    fresh right after a sync even when the content hasn't changed in months —
-    this previously made the gardener silently skip genuinely stale notes and
-    catch freshly-synced ones instead."""
+    """Last git commit time for a vault note, falling back to mtime (sync resets mtime)."""
     try:
         out = subprocess.run(
             ["git", "-C", VAULT, "log", "-1", "--format=%ct", "--", path],
@@ -81,7 +68,6 @@ def find_stale_notes(stale_days=STALE_DAYS):
     now = dt.datetime.now().timestamp()
     cutoff = now - stale_days * 86400
     for root, dirs, files in os.walk(VAULT):
-        # Skip hidden/generated dirs
         dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ("_inbox", ".trash")]
         for f in files:
             if not f.endswith(".md"):
@@ -91,14 +77,12 @@ def find_stale_notes(stale_days=STALE_DAYS):
             if touched is None or touched > cutoff:
                 continue
             rel = os.path.relpath(path, VAULT)
-            # Skip generated artifacts (signal scans are in 06 Logs/Signals — they're
-            # generated daily and should not be "gardened")
+            # Generated logs are not gardened.
             if rel.startswith("06 Logs/"):
                 continue
             age_days = int((now - touched) / 86400)
             try:
                 text = open(path, encoding="utf-8", errors="replace").read()
-                # Strip YAML frontmatter
                 text = re.sub(r"^---\n.*?\n---\n", "", text, flags=re.DOTALL)
                 snippet = text.strip()[:300]
                 if len(snippet) < 50:
@@ -118,7 +102,6 @@ def find_recent_signals(days_back=14):
         if os.path.exists(path):
             try:
                 text = open(path, encoding="utf-8", errors="replace").read()
-                # Strip frontmatter, keep the signal body
                 text = re.sub(r"^---\n.*?\n---\n", "", text, flags=re.DOTALL)
                 signals.append({"date": d.strftime("%Y-%m-%d"), "text": text[:2000]})
             except Exception:
@@ -145,9 +128,7 @@ def find_related_signals(note_text, signals, threshold=0.35):
 
 
 def _proposal_date(path):
-    """Parse the `date:` frontmatter propose_update() writes. Falls back to
-    mtime — this is our own generated file, not a synced vault note, so mtime
-    is trustworthy here (only the source vault notes have the sync problem)."""
+    """Epoch from a proposal's `date:` frontmatter, falling back to mtime."""
     try:
         text = open(path, encoding="utf-8", errors="replace").read(400)
         m = re.search(r"^date:\s*(\S+)", text, re.M)
@@ -162,18 +143,7 @@ def _proposal_date(path):
 
 
 def _already_proposed(slug, cooldown_days=PROPOSAL_COOLDOWN_DAYS):
-    """True if a gardener proposal for this canonical note already exists —
-    pending in _inbox/ (not yet ingested) or archived in _inbox/processed/
-    (ingested, possibly hash-suffixed by ingest.py on a name collision) —
-    within cooldown_days.
-
-    Checking only INBOX_DIR (as this used to) missed the processed/ case:
-    /ingest empties the pending slot the same day, so a canonical note that
-    stays stale (the common case — see EVAL.md "the curated human strata are
-    frozen") got re-proposed every single run for as long as it kept matching
-    a recent signal. Measured 2026-08-06: 62 files in _inbox/processed/ for
-    23 unique canonical notes, up to 6 near-duplicate copies of the same
-    proposal, unbounded (Principle 8)."""
+    """True if a proposal for this note exists in _inbox/ or _inbox/processed/ within cooldown_days."""
     now = dt.datetime.now(dt.timezone.utc).timestamp()
     patterns = [
         os.path.join(INBOX_DIR, "gardener-%s.md" % slug),
@@ -194,7 +164,7 @@ def propose_update(note_rel, note_snippet, related_signals, age_days=30):
     slug = re.sub(r"[^a-z0-9]+", "-", note_rel.lower().replace(".md", "").replace("/", "-"))[:60]
     path = os.path.join(INBOX_DIR, "gardener-%s.md" % slug)
     if _already_proposed(slug):
-        return None  # already proposed within the cooldown window
+        return None
 
     lines = [
         "---",
@@ -251,7 +221,7 @@ def main():
     print("  %d recent signal scans loaded" % len(signals), file=sys.stderr)
 
     proposed = 0
-    for path, rel, age, snippet in stale[:MAX_PROPOSALS * 2]:  # scan up to 10
+    for path, rel, age, snippet in stale[:MAX_PROPOSALS * 2]:
         if proposed >= MAX_PROPOSALS:
             break
         related = find_related_signals(snippet, signals)

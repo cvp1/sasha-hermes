@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
-# Sasha installer — stand up the accessibility layer on top of an existing
-# hermes install, for one user.
+# Install Sasha (dashboard, loopback chat pane and gateway as systemd units) for one hermes user.
 #
 #   sudo ./install.sh --user alice --name Alice [--place "Home"]
 #                     [--port 7790] [--term-port 7791] [--force-config]
-#
-# What it does:
-#   * installs dashboard.py + the chat-pane wrapper to /usr/local/lib/sasha/
-#   * writes ~USER/.config/sasha/config.json (kept if it exists) + a generated
-#     Basic-Auth credential (printed ONCE at the end)
-#   * installs two systemd units:
-#       sasha-term-USER  — ttyd on LOOPBACK ONLY (canvas renderer, warm-paper
-#                          xterm theme) wrapping `hermes` in tmux
-#       sasha-web-USER   — the dashboard, which reverse-proxies the chat pane
-#                          behind its Basic Auth
-#   * verifies: units active, term port NOT reachable from the LAN, web 401s
-#     without credentials.
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "must run as root (sudo $0 ...)"; exit 1; }
 
@@ -75,7 +62,7 @@ else
   echo "    keeping existing config.json"
 fi
 if [[ ! -f "$CFG_DIR/auth" ]]; then
-  # lowercase the USERNAME only — never the password (would halve its entropy)
+  # Lowercase the login only, never the password.
   LOGIN=$(printf '%s' "$DISPLAY_NAME" | tr '[:upper:]' '[:lower:]')
   PW=$(head -c18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c14)
   printf '%s:%s' "$LOGIN" "$PW" > "$CFG_DIR/auth"

@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
-"""Inbox Triage Agent — watch Gmail + Proton for urgent emails between daily briefs.
+"""Inbox triage: check Gmail and Proton for new mail, classify urgency, alert on urgent items.
 
-Runs every 30min: checks Gmail and Proton for new email since last check,
-classifies each by urgency, and alerts if anything needs same-day attention.
-
-Design:
-  - Gmail through `google_connector` (imap -> oauth behind one resolver)
-  - Proton through `proton_connector` (the local Bridge, one transport home)
-  - Classifies with local gemma4:e4b on .21 — sensitive data stays local
-  - Tracks state in a JSON file (last_check timestamp, seen IDs)
-  - Alerts via Proton email only when something actionable appears
-  - Per-account degradation: a dead mailbox is LOUD on stderr and does not
-    take the other account with it; neither ever reports empty for unreadable
+Classification runs on a local Ollama model. One unreadable account is reported
+on stderr and does not stop the other.
 
 Usage:
-    python3 inbox_triage.py [--dry-run] [--alert-email craig.vandeputte@proton.me]
+    python3 inbox_triage.py [--dry-run] [--alert-email ADDRESS]
 """
 import datetime as dt
 import json
@@ -35,47 +26,26 @@ STATE_FILE = os.path.join(os.path.expanduser("~"), ".local", "state", "cc", "sas
 
 OLLAMA_URL = "http://192.168.86.21:11434/api/chat"
 OLLAMA_MODEL = "gemma4:e4b"
-DEFAULT_ALERT = "craig.vandeputte@proton.me"
+DEFAULT_ALERT = os.environ.get("INBOX_TRIAGE_ALERT_EMAIL", "you@example.com")
 
-# Mail this pipeline sends to itself — the Work Brief (Gmail->Gmail,
-# cognizant_brief.py) and this script's own "Inbox Triage" alert (->Proton).
-# Both land back in an inbox this script polls; never classify or alert on
-# them, or a stray URGENT hit re-alerts on its own alert forever (found
-# 2026-07-21: 6 straight 30-min cycles alerting on nothing but the prior
-# alert's subject literally matching the `urgent` pattern).
-SELF_ADDRESSES = {"craig.vandeputte@gmail.com", "craig.vandeputte@proton.me"}
 
-# Proton Mail is read through `proton_connector`, which owns the Bridge
-# transport, the vault read and the OTP guard. There are no IMAP constants
-# here any more — a second copy of them is a second thing to get wrong, and
-# port 1143 is Sheridan's account.
+def _env_list(name):
+    return [s.strip() for s in os.environ.get(name, "").split(",") if s.strip()]
+
+
+# Addresses this pipeline sends from; skipped so its own alerts never re-trigger.
+SELF_ADDRESSES = {a.lower() for a in _env_list("INBOX_TRIAGE_SELF_ADDRESSES")}
 
 URGENT_PATTERNS = [
-    # \bgs\b (not gs\b): must be a standalone "GS" (the Goldman Sachs
-    # shorthand), not a substring match on any word ending in "gs" —
-    # earnings/savings/bookings/meetings/listings/flags all matched
-    # gs\b and false-positived (found 2026-07-22, PayPal "earnings" email).
-    r"goldman.?sachs", r"\bgs\b", r"cognizant", r"urgent", r"action required",
+    r"urgent", r"action required",
     r"deadline", r"asap", r"today", r"meeting.*change", r"schedule.*conflict",
     r"client.*call", r"review.*by",
-]
-TOP_PEOPLE = [
-    "sheridan", "craig vandeputte",
-]
+] + _env_list("INBOX_TRIAGE_URGENT_PATTERNS")
+TOP_PEOPLE = [p.lower() for p in _env_list("INBOX_TRIAGE_TOP_PEOPLE")]
 
 
 def _guard_otp(subject, snippet):
-    """Blank one-time codes in a fetched message before anything else sees it.
-
-    Both fetchers now come through a connector, whose dispatcher runs this same
-    guard in its sanitize step — one guard per path, and neither path is
-    unguarded. This stays as the belt to that braces: it is the guard any future
-    fetcher added to this file inherits, and the cost of calling it twice is
-    nothing next to the cost of a code reaching the classifier prompt.
-
-    Each field is the other's context: the wording that identifies an auth code
-    usually sits in the subject while the digits sit in the body.
-    """
+    """Blank one-time codes in subject and snippet, each using the other as context."""
     return (redact_field(subject, context=snippet),
             redact_field(snippet, context=subject))
 
@@ -98,19 +68,7 @@ def _save_state(state):
 
 
 def _fetch_emails(since_iso, max_results=15):
-    """Recent inbox messages, through the google-connector's one path.
-
-    Was a direct ``google_auth.service("gmail", "v1")`` call, which died whole
-    when the OAuth grant was revoked on 2026-09-16. The connector resolves
-    ``imap -> oauth`` behind one resolver, so this survives an OAuth death.
-
-    The OTP guard that used to run here now runs in the DISPATCHER's sanitize
-    step (``google-connector/sanitize.py``), and the Proton fetcher below now
-    comes through ``proton_connector`` for the same reason — one guard per path,
-    and neither path is unguarded.
-
-    Returns the same dict shape as before, so nothing downstream changes.
-    """
+    """Fetch recent Gmail inbox messages via google_connector; raise if unavailable."""
     from google_connector import Caller, dispatch
 
     query = "in:inbox"
@@ -122,8 +80,7 @@ def _fetch_emails(since_iso, max_results=15):
                    {"query": query, "count": min(max_results, 40)},
                    Caller("inbox_triage"))
     if env.status == "unavailable":
-        # Loud and specific. Returning [] here would read as "no new mail",
-        # which is the failure mode the envelope exists to prevent.
+        # Raise rather than return [], which would read as "no new mail".
         raise RuntimeError("gmail fetch unavailable: %s — %s"
                            % ((env.error or {}).get("code"),
                               (env.error or {}).get("recovery") or "no recovery given"))
@@ -147,16 +104,9 @@ def _fetch_emails(since_iso, max_results=15):
 
 
 def _at_or_after(date_header, since_iso):
-    """Is this message's own Date at or after ``since_iso``?
+    """True if the message Date is at or after since_iso (the server query is day-granular).
 
-    Gmail's `after:` (and IMAP's `SINCE`) are CALENDAR-DAY granular, so a job
-    that runs every 30 minutes and asks for "since 14:00" gets everything since
-    midnight and re-triages the whole day (Grok G15, 2026-09-16). The server
-    query stays as the cheap coarse filter; the exact bound is applied here,
-    against the message's own parsed Date.
-
-    An unparseable Date is KEPT: dropping a message because its header is
-    malformed would be a silent loss, and the coarse window already bounds it.
+    Unparseable dates are kept rather than silently dropped.
     """
     if not since_iso:
         return True
@@ -179,17 +129,7 @@ def _at_or_after(date_header, since_iso):
 
 
 def _fetch_proton_emails(max_results=15):
-    """Recent Proton INBOX messages, through the proton-connector's one path.
-
-    Was raw ``imaplib`` in this file — its own socket, its own
-    ``open(~/.key/proton_cvp)``, its own OTP guard — and every failure path
-    ``return []``. An empty Proton inbox that is not empty is the exact failure
-    the connector's envelope exists to prevent, and it read the vault outside
-    ``_lib.secrets`` while doing it (Grok G18, 2026-09-16).
-
-    Raises on ``unavailable``, exactly as the Gmail fetcher does; the caller
-    isolates the two accounts so one dead mailbox does not take the other.
-    """
+    """Fetch recent Proton inbox messages via proton_connector; raise if unavailable."""
     from proton_connector import Caller, dispatch
 
     env = dispatch("proton_mail_recent", {"count": min(max_results, 40)},
@@ -214,10 +154,10 @@ def _fetch_proton_emails(max_results=15):
 
 
 def _classify_local(email_text):
-    """Classify an email using local gemma4:e4b on .21. Returns (category, urgency)."""
+    """Classify an email as URGENT, FYI or NOISE with the local model; FYI on any failure."""
     prompt = (
         "Classify this email into exactly one category. Reply with exactly one word.\n\n"
-        "URGENT — a human is waiting on Craig for a same-day reply, a real deadline "
+        "URGENT — a human is waiting on the user for a same-day reply, a real deadline "
         "lands today or tomorrow, or it is a client/work escalation. Do NOT mark it "
         "urgent just because it mentions money, a due date, or the word "
         "statement/payment — routine bills and account statements are never urgent "
@@ -229,8 +169,7 @@ def _classify_local(email_text):
         "Email:\n%s\n\nCategory:" % email_text[:1000]
     )
     try:
-        # An email body must not forge turns (audits/2026-09-28-ai-pulse P1).
-        # A guard failure lands in the except below -> FYI, never unguarded.
+        # Neutralize control tokens so email text cannot forge chat turns.
         messages = control_tokens.neutralize_messages(
             [{"role": "user", "content": prompt}],
             OLLAMA_URL.rsplit("/api/", 1)[0], OLLAMA_MODEL)
@@ -252,16 +191,14 @@ def _classify_local(email_text):
     for cat in ("URGENT", "FYI", "NOISE"):
         if cat in out:
             return cat
-    # Degrade toward safety: an unparseable verdict must never bury mail as NOISE.
+    # An unparseable verdict must never bury mail as NOISE.
     print("inbox_triage: unparseable verdict %r — defaulting to FYI" % out[:40],
           file=sys.stderr)
     return "FYI"
 
 
 def _is_self_sent(email):
-    """True if `from` is one of Craig's own monitored addresses. These are
-    always either an already-read digest or this tool's own prior alert —
-    never new mail needing triage."""
+    """True if the sender is one of SELF_ADDRESSES."""
     return parseaddr(email.get("from", ""))[1].lower() in SELF_ADDRESSES
 
 
@@ -325,11 +262,7 @@ def main():
     print("Inbox triage — checking since %s" % (since or "start of day"),
           file=sys.stderr)
 
-    # Fetch from both Gmail and Proton (Gmail uses date-based since, Proton
-    # uses UNSEEN). One account being down must not take the other with it —
-    # that shared-fate coupling is exactly what the connector cutover removes,
-    # so it would be perverse to reintroduce it here. A Gmail outage is LOUD on
-    # stderr and the Proton half still runs.
+    # One unavailable account must not stop the other.
     try:
         gmail_emails = _fetch_emails(since)
     except Exception as e:  # noqa: BLE001 — degrade one account, not the run
@@ -362,7 +295,6 @@ def main():
         print(json.dumps({"summary":"Triage: no new emails","count":0,"emails":[]}))
         return 0
 
-    # Classify each new email
     urgent = []
     for e in new_emails:
         tag = "[G]" if e["source"] == "gmail" else "[P]"
@@ -379,9 +311,8 @@ def main():
         flag = label.get(cat, "?")
         print("  %s %s %s — %s" % (tag, flag, e["subject"][:60], cat), file=sys.stderr)
 
-    # Update state — keep IDs from both sources
     all_ids = set(e["id"] for e in all_emails)
-    state["seen_ids"] = sorted(all_ids)[-200:]  # keep last 200
+    state["seen_ids"] = sorted(all_ids)[-200:]
     state["last_check"] = _now_iso()
 
     if args.dry_run:
@@ -395,7 +326,6 @@ def main():
         return 0
 
     if urgent:
-        # Alert
         body = _format_alert(new_emails)
         try:
             sys.path.insert(0, CC)

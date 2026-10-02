@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Recent event-bus activity for the unified dashboard (pro audience).
-Emits the package's `events_cmd` contract: {"events":[{source,type,ts}]}."""
+"""Print recent event-bus activity for the dashboard's events_cmd: {"events":[{source,type,ts}]}."""
 import json, os, sys
 
 sys.path.insert(0, os.path.join(os.path.expanduser("~"), "Github", "CC"))

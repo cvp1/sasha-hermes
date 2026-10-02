@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Sasha — an accessibility layer for hermes.
+"""Sasha: a plain-language web front end to a hermes agent (greeting, action chips, chat).
 
-A warm, plain-language web front door to a hermes agent for someone who will
-never open a terminal: a greeting, a few plain-word action chips, and the
-hermes chat as the hero. Ops detail lives behind an "under the hood" drawer.
-
-Config: ~/.config/sasha/config.json (or $SASHA_CONFIG). See config.example.json.
-Security posture: ttyd bound to loopback only, reverse-proxied behind this
-server's Basic Auth; no shell endpoint; file reads restricted to an allowlist.
-Telemetry: aggregate event COUNTS only (no queries, content, or transcripts),
-local JSONL, off with "telemetry": false.
+Config: ~/.config/sasha/config.json (or $SASHA_CONFIG); see config.example.json.
+Serves behind Basic Auth; ttyd terminals stay on loopback and are reverse-proxied.
+Telemetry records local event counts only and is disabled with "telemetry": false.
 """
 import json, os, subprocess, sys, time, urllib.request, socket, threading, shutil
 from datetime import datetime
@@ -45,18 +39,12 @@ COACH_CHIPS = CONFIG.get("coach_chips", [
 ])
 SERVICES   = CONFIG.get("services", [])          # [{"href","icon","title","desc"}]
 
-# ---- The me/ passport (shared identity across Sasha surfaces) ----
-# ~/ai-os/me/ is the SAME schema Sasha-on-Claude-Code writes: WHOAMI.md +
-# HOW-I-WORK.md. Either product reads and writes it; neither owns it — a user
-# graduates between surfaces without losing who they are. Seeded here if
-# absent (never overwritten); wired into hermes via the operational-context
-# bridge block (me_bridge.py).
+# Shared identity files (WHOAMI.md, HOW-I-WORK.md), also read by other Sasha surfaces.
 ME_DIR = os.path.expanduser(CONFIG.get("me_dir", "~/ai-os/me"))
 
 
 def seed_me_dir():
-    """Create skeleton me/ files if absent. Never overwrite — the files may
-    already carry a whole identity written by the user's other Sasha."""
+    """Create skeleton me/ files if absent; never overwrite existing ones."""
     if not ME_DIR:
         return
     try:
@@ -77,10 +65,8 @@ def seed_me_dir():
     except OSError:
         pass
 
-# ---- Audience: "novice" (default) or "pro" ----
-# Pro is an AUDIENCE, not a fork: same page, opt-in depth. Pro adds a skills
-# sidebar (auto-discovered), terminal tabs beside the chat, an activity feed,
-# and extra owner-defined checks. The novice surface never shows any of it.
+# Audience "novice" (default) or "pro"; pro adds a skills sidebar, terminal tabs,
+# an activity feed and owner-defined checks.
 AUDIENCE   = CONFIG.get("audience", "novice")
 IS_PRO     = AUDIENCE == "pro"
 SKILLS_DIR = os.path.expanduser(CONFIG.get("skills_dir", "~/.hermes/skills")) if IS_PRO else None
@@ -88,24 +74,19 @@ CHECKS_CMD = CONFIG.get("checks_cmd") if IS_PRO else None   # argv -> JSON [{lab
 EVENTS_CMD = CONFIG.get("events_cmd") if IS_PRO else None   # argv -> JSON {"events":[{source,type,ts}]}
 PUBLIC_PATHS = tuple(CONFIG.get("public_paths", []))        # static_dirs prefixes served WITHOUT auth
 
-# Loopback-bound ttyd terminals, reverse-proxied under /term/<id>/ behind this
-# dashboard's Basic Auth. Nothing writable listens on 0.0.0.0 anymore.
+# Loopback ttyd terminals, reverse-proxied under /term/<id>/ behind Basic Auth.
 TERM_PORTS = {"hermes": int(CONFIG.get("term_port", 7791))}
 # Pro may define several terminals: {"bash": 8081, "hermes": 8082}
 if IS_PRO:
     for _tn, _tp in CONFIG.get("terminals", {}).items():
         TERM_PORTS[_tn] = int(_tp)
 
-# Chat transport: "ws" = native chat bubbles over hermes's /api/ws JSON-RPC
-# gateway (`hermes serve`, loopback) — the first-party seam built for web
-# clients. "term" = legacy ttyd terminal embed (fallback).
+# Chat transport: "ws" = native chat over the hermes /api/ws gateway; "term" = ttyd embed.
 CHAT_MODE = CONFIG.get("chat_mode", "term")
 GW_PORT   = int(CONFIG.get("gw_port", 9119))
 
-# ---- INT-4 usage telemetry: aggregate EVENT COUNTS only. One JSONL line per
-# UI event ({ts, e, ip}) — never search queries, terminal content, or any
-# transcript. /api/usage serves per-day aggregates + a 30-min-gap session
-# estimate for the INT-4 reach report.
+# Usage telemetry: one JSONL line per UI event ({ts, e, ip}), never content.
+# /api/usage serves per-day counts and a 30-minute-gap session estimate.
 _usage_lock = threading.Lock()
 
 def track(event, ip=""):
@@ -139,7 +120,7 @@ def usage_summary():
         sessions[d] = sum(1 for i, t in enumerate(ts) if i == 0 or t - ts[i-1] > 1800)
     return {"days": days, "sessions": sessions}
 
-# ---- Cached values (refresh every 60s) ----
+# Check results are cached for 60s.
 _cache = {"mcp": None, "mcp_ts": 0, "cron": None, "cron_ts": 0}
 
 def _pgrep(name):
@@ -152,10 +133,7 @@ def _api_json(url, timeout=3):
     except: return None
 
 def _check_chat():
-    """GREEN only when the chat can actually connect — not just when a port
-    answers. In ws mode that means the gateway serves its page AND embedded
-    chat is enabled (a live gateway with the chat switch off once read
-    'All's well' while the conversation couldn't connect — never again)."""
+    """GREEN only when the chat can connect: in ws mode the gateway must serve its page with embedded chat enabled."""
     if CHAT_MODE == "ws":
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{GW_PORT}/", timeout=3) as r:
@@ -209,9 +187,7 @@ def _check_mcp():
         return ("Connections", "YELLOW", "config?")
 
 def _check_cron():
-    """Scheduled count alone lies — hermes's cron ticker is a thread that can
-    die while chat still answers. Read its own liveness heartbeat
-    (~/.hermes/cron/ticker_last_success) and go YELLOW when it's stale."""
+    """Count active hermes cron jobs; YELLOW if the ticker heartbeat is older than 2h."""
     global _cache
     now = time.time()
     if _cache["cron"] and now - _cache["cron_ts"] < 60:
@@ -239,8 +215,7 @@ def _check_disk():
         return ("Disk space", "YELLOW", "?")
 
 def _check_custom():
-    """Pro: owner-defined checks — argv command printing a JSON list of
-    {label, status, detail}. Contract failures degrade to one YELLOW row."""
+    """Pro: run CHECKS_CMD, which prints a JSON list of {label, status, detail}; failure is one YELLOW row."""
     try:
         r = subprocess.run(CHECKS_CMD, capture_output=True, text=True, timeout=10)
         rows = json.loads(r.stdout)
@@ -249,7 +224,6 @@ def _check_custom():
         return [("Custom checks", "YELLOW", str(e)[:60])]
 
 def get_checks():
-    """Run all checks in parallel."""
     checks = []
     with ThreadPoolExecutor(max_workers=6) as ex:
         futs = [ex.submit(f) for f in (_check_chat, _check_mcp, _check_cron, _check_disk)]
@@ -261,8 +235,6 @@ def get_checks():
                 checks.extend(r) if isinstance(r, list) else checks.append(r)
             except Exception: pass
     return checks
-
-# ---- HTTP Server ----
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, d, s=200):
@@ -300,10 +272,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path):
         """Serve static files from doc directories under the same auth domain."""
-        # Map URL paths to filesystem dirs (mirrors nginx volume mounts)
-        # from config: "static_dirs": {"/weather": "~/some/docs", ...}
+        # config "static_dirs": {"/weather": "~/some/docs", ...}
         root_map = {p: os.path.expanduser(d) for p, d in CONFIG.get("static_dirs", {}).items()}
-        # Find which root this path maps to
         matched_root = None
         rel = path
         for prefix, root in root_map.items():
@@ -317,13 +287,12 @@ class Handler(BaseHTTPRequestHandler):
 
         full = os.path.join(matched_root, rel) if rel else matched_root
         full = os.path.normpath(full)
-        # Security: prevent escaping the root
+        # Refuse paths that escape the root.
         if not full.startswith(os.path.normpath(matched_root)):
             self._json({"error":"bad path"},403)
             return
 
         if os.path.isdir(full):
-            # Serve index.html if exists, else directory listing
             idx = os.path.join(full, "index.html")
             if os.path.isfile(idx):
                 full = idx
@@ -387,18 +356,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error":str(e)},500)
 
     def _proxy_term(self):
-        """Transparently reverse-proxy /term/<id>/... to a loopback ttyd, under
-        this dashboard's auth. One raw-socket tunnel serves both the HTTP asset
-        fetches and the WebSocket upgrade — protocol-agnostic once bytes flow."""
+        """Reverse-proxy /term/<id>/... (HTTP and WebSocket) to a configured loopback ttyd."""
         parts = urlparse(self.path).path.split("/", 3)
         tid = parts[2] if len(parts) > 2 else ""
-        # Only configured terminals — never proxy to arbitrary loopback ports.
         port = TERM_PORTS.get(tid)
         if port is None:
             self._json({"error": "unknown terminal"}, 404)
             return
         rest = parts[3] if len(parts) > 3 else ""
-        if rest == "":  # the iframe page mount itself, not assets/ws
+        if rest == "":  # the page mount, not assets/ws
             track("term:" + tid, self.client_address[0])
         try:
             backend = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -407,13 +373,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": f"terminal offline: {e}"}, 502)
             return
         try:
-            # A WebSocket upgrade needs its persistent Connection: Upgrade tunnel,
-            # pinned 1:1 to this backend. Every OTHER request is a plain HTTP asset
-            # fetch — force Connection: close so the browser can NOT reuse this
-            # client TCP connection for a different /term/<id>. This tunnel pins a
-            # whole keep-alive connection to ONE backend (chosen by the first
-            # request), so a reused connection would route e.g. /term/hermes/ to
-            # bash's ttyd (base -b /term/bash) which 404s any foreign path.
+            # Non-WebSocket requests get Connection: close so a kept-alive connection,
+            # pinned to this backend, is never reused for a different terminal.
             is_ws = self.headers.get("Upgrade", "").lower() == "websocket"
             head = f"{self.command} {self.path} {self.request_version}\r\n"
             for k, v in self.headers.items():
@@ -433,12 +394,10 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _proxy_gw(self):
-        """Reverse-proxy /gw/* to the hermes gateway (`hermes serve`, loopback),
-        under this dashboard's auth. The gateway's DNS-rebinding guard only
-        accepts loopback Host values, and its websocket origin check is
-        localhost-only — so both Host and Origin are rewritten. Same tunnel
-        rules as _proxy_term: ws upgrades keep their pinned connection,
-        everything else gets Connection: close."""
+        """Reverse-proxy /gw/* to the loopback hermes gateway.
+
+        Host and Origin are rewritten to loopback, which the gateway requires.
+        """
         try:
             backend = socket.create_connection(("127.0.0.1", GW_PORT), timeout=5)
         except OSError as e:
@@ -471,13 +430,10 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _pump(a, b):
-        """Bidirectional tunnel between two sockets — one thread per direction,
-        blocking mode. Blocking sends apply backpressure: a full kernel send
-        buffer makes sendall WAIT instead of raising EAGAIN. The old non-blocking
-        select-loop treated a send-side EAGAIN (BlockingIOError, i.e. OSError) as
-        fatal — harmless over loopback (huge buffers) but it tore live terminals
-        down for real LAN clients (small buffers) on the first tmux redraw burst,
-        leaving a connected-but-blank 'black box' terminal."""
+        """Bidirectional socket tunnel, one blocking thread per direction.
+
+        Blocking sends apply backpressure instead of failing on a full send buffer.
+        """
         a.setblocking(True); b.setblocking(True)
 
         def one_way(src, dst):
@@ -503,8 +459,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = urlparse(self.path).path
-        # Owner-designated public static prefixes (report pages other tools
-        # link to) skip auth; everything else authenticates first.
+        # Configured public static prefixes skip auth.
         if PUBLIC_PATHS and p.startswith(PUBLIC_PATHS):
             return self._serve_static(p)
         if not self._check_auth(): return
@@ -514,7 +469,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._proxy_gw()
         if p == "/":
             track("load", self.client_address[0])
-            self._html(HTML)  # skills rendered inline in HTML
+            self._html(HTML)
         elif p == "/api/t":
             q = urlparse(self.path).query
             if q.startswith("e="): track(unquote(q[2:]), self.client_address[0])
@@ -524,8 +479,6 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/status":
             try: self._json({"checks":[{"label":l,"status":s,"detail":d} for l,s,d in get_checks()]})
             except Exception as e: self._json({"error":str(e)})
-        # /api/exec removed 2026-07-04 — the redesigned UI spawns no terminals
-        # client-side, so an authed arbitrary-shell endpoint has no reason to exist.
         elif p == "/api/search":
             q = urlparse(self.path).query
             if q.startswith("q="):
@@ -564,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
             q = urlparse(self.path).query
             if q.startswith("path="):
                 fp = unquote(q[5:])
-                # Handle relative paths by trying known base directories
+                # Resolve relative paths against READ_DIRS.
                 if not fp.startswith("/"):
                     for b in READ_DIRS:
                         candidate = os.path.join(b, fp)
@@ -582,7 +535,6 @@ class Handler(BaseHTTPRequestHandler):
                 else: self._json({"error":"path not allowed or not found"})
             else: self._json({"error":"no path"})
         else:
-            # Try serving as static file (docs, reports, weather, etc.)
             self._serve_static(p)
 
     def do_POST(self):
@@ -610,7 +562,6 @@ class Handler(BaseHTTPRequestHandler):
         if "/api/" in str(a): print("[%s] %s" % (self.log_date_time_string(), f % a), file=sys.stderr)
 
 
-# ---- Server-rendered pieces (from config) ----
 SERVICES_HTML = "".join(
     f'<a class="sc-card" href="{s["href"]}" target="_blank"><span class="sc-ico">{s.get("icon","&#128279;")}</span>'
     f'<div class="sc-body"><div class="sc-t">{s["title"]}</div><div class="sc-d">{s.get("desc","")}</div></div>'
@@ -639,7 +590,6 @@ def _build_chips():
 CHIPS_HTML, COACH_MAP = _build_chips()
 NICE_MAP = {aid: [a.get("label", aid), a.get("busy", "Working\u2026")] for aid, a in ACTIONS.items()}
 
-# ---- Pro: skills sidebar (auto-discovered) + hero tabs ----
 def _build_skills():
     if not (IS_PRO and SKILLS_DIR and os.path.isdir(SKILLS_DIR)):
         return ""
@@ -909,7 +859,7 @@ __SKILLS__
  </div>
 </div>
 <script>
-// INT-4 telemetry beacon — event names only, fire-and-forget
+// Telemetry beacon — event names only, fire-and-forget
 function trk(e){try{fetch(new URL('/api/t?e='+encodeURIComponent(e),location.origin).href)}catch(_){}}
 
 // Greeting — time-aware, plain words
@@ -1174,7 +1124,7 @@ def main():
         import capabilities
         capabilities.update(me_dir=ME_DIR)
     except Exception:
-        pass  # capability inventory is best-effort; never block the dashboard
+        pass  # best-effort; never block startup
     s = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Dashboard at http://{args.host}:{args.port}", file=sys.stderr)
     try: s.serve_forever()

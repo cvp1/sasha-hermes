@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""Agent runner — subscribe to event bus and dispatch to agent scripts.
-
-Each agent is a function that takes a single event dict and returns
-(alert_type, alert_body) or None. The runner handles subscription, ack,
-and alert delivery.
+"""Subscribe to the event bus and dispatch tick events to agent scripts.
 
 Usage:
     python3 agent_runner.py                    # listen and dispatch (foreground)
     python3 agent_runner.py --dry-run          # show what would happen
-
-The runner is started by the watchdog (or systemd) and runs forever.
 """
 import json
 import os
@@ -59,11 +53,10 @@ def _run_agent(script_path, *args):
 
 
 def handle_event(event):
-    """Route an event to the right agent. Returns None or (alert_body, alert_type)."""
+    """Route an event to its agent. Returns None or (alert_type, alert_body)."""
     etype = event.get("type")
     source = event.get("source")
 
-    # Inbox triage: every_30min tick
     if etype == "every_30min":
         try:
             triage_args = ["--dry-run"] if "--dry-run" in sys.argv else []
@@ -81,11 +74,9 @@ def handle_event(event):
             note_path = _write_note("inbox-triage-error", str(e))
             return ("Inbox triage error", note_path)
 
-    # Knowledge gardener: daily_5am tick
     if etype == "daily_5am":
         alerts = []
         try:
-            # Check if there are proposals with a dry-run
             output = _run_agent(
                 os.path.join(CC, "_lib", "knowledge_gardener.py"),
                 "--dry-run",
@@ -99,7 +90,7 @@ def handle_event(event):
         except Exception as e:
             alerts.append(("Gardener error", str(e)))
 
-        # Pattern learner: daily_5am tick (runs after gardener regardless)
+        # Pattern learner runs regardless of the gardener result.
         try:
             learner_args = ["--publish"]
             if "--dry-run" in sys.argv:
@@ -117,7 +108,6 @@ def handle_event(event):
             summary = "\n".join("- %s: %s" % a for a in alerts)
             return ("Daily agents", summary)
 
-    # Heartbeat: log silently
     if etype == "heartbeat":
         return None
 

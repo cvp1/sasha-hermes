@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Ranch-specific health checks for the unified Sasha dashboard (pro audience).
+"""Ranch health checks for the dashboard's checks_cmd: prints [{label, status, detail}] JSON.
 
-Emits the package's `checks_cmd` JSON contract: a list of
-{label, status(GREEN|YELLOW|RED), detail}. These are the CC checks the old
-_lib/dashboard.py carried inline (daemons, .21 ollama, DeepSeek balance,
-events db, knowledge index, agent notes) — now a standalone emitter so the
-dashboard code stays generic.
+status is GREEN, YELLOW or RED.
 """
 import json, os, sqlite3, subprocess, sys, time, urllib.request
 from datetime import datetime
@@ -29,9 +25,6 @@ def _api_json(url, timeout=3):
             return json.loads(r.read())
     except Exception:
         return None
-
-
-# (daemons() check removed Story 021 — watchdog/agent_runner framework retired.)
 
 
 def ollama():
